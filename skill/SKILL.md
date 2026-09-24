@@ -3,8 +3,8 @@ name: impeccable-rust
 description: >-
   Use when writing, reviewing, hardening, or designing Rust for high-stakes or
   long-lived crates. Checklist for exhaustive testing, trustworthy benchmarks,
-  misuse-resistant APIs, decision records, semver hygiene, and deliberate
-  dependency maintenance.
+  data layout, misuse-resistant APIs and everyday API idioms, decision records,
+  semver hygiene, and deliberate dependency maintenance.
 ---
 
 # Impeccable Rust
@@ -82,6 +82,16 @@ Measure what matters, not only speed:
 
 Record how you load the system (open, closed, partly-open), which statistic you report (mean, median, histogram, CDF), and how you decide a regression. "y is greater than x" is not enough.
 
+#### Data layout
+
+Measure first. Apply these only when a profile shows the hot path is memory- or cache-bound.
+
+- Prefer a `u32` index into a contiguous arena over a `Box` or `Rc` pointer graph, and a generational handle (for example, `slotmap`) once slots are reused. Neighbors stay on the same cache lines, and a generation stops a stale id from aliasing a reused slot. Keep real `&T` borrows for a small graph or an API that must hand out references.
+- Use struct-of-arrays for a hot loop that touches a field subset, so positions are not dragged along with cold names and flags. Keep array-of-structs when each access needs the whole record, or when the collection is tiny.
+- Store a sparse `Option` or `bool` out of band (side map, bitset, or parallel array keyed by id) so a rare field does not widen every hot row. Leave the field in the struct when most rows have it.
+- Box a large rare enum variant so the enum is not sized to that arm, and assert `size_of` in tests so a fatter variant fails CI. Skip the box when the variants are similar in size, or when the extra indirection loses in a profile.
+- Set `repr` and alignment when layout is part of the contract: `repr(C)` for FFI or stable bytes, `repr(align(64))` so a hot atomic does not share a cache line. Leave everyday structs on rustc's default field order. Reach for `packed` only after a measurement shows the padding costs more than unaligned access.
+
 ### 5. Documentation
 
 Decisions:
@@ -101,16 +111,30 @@ What is not there:
 Make misuse inexpressible:
 
 - Newtypes, not type aliases (`Meters(u64)` vs `Miles(u64)`)
-- Typestates (`Rocket<Ground>` vs `Rocket<Air>`)
 - Two-phase structs (raw `TomlConfig` vs validated `ResolvedConfig`)
-- Enums over booleans, especially multi-bool parameter lists
 - Enums for linked arguments (encode linked `bool` + `Option` pairs as one type so conflicting states cannot be constructed)
+
+State-machine ladder (stop at the first rung that rules out the illegal states):
+
+- Keep `bool` for flags that are independent and not a lifecycle (`verbose` and `color`).
+- Turn lifecycle bools and phase-only `Option`s into an enum, including multi-bool parameter lists. Put each field on the variant that owns it so ghost data and combinations such as connected-but-not-open cannot be built.
+- Nest when a flat enum copies the same fields onto many variants and every match names every micro-state (past a handful of simple variants). Share context on an orchestrator and delegate to a phase enum (`Session::Auth { ctx, phase }` and `Session::Work { ctx, phase }`).
+- Use typestate when the next call must be impossible until the transition runs (`Rocket<Ground>` vs `Rocket<Air>`). Consume `self` so the old state cannot be reused. Stay on a runtime enum if you need one `Vec` of mixed states, or if the phase is data from outside the API.
 
 Idioms:
 
 - Clippy in CI (deny or warn meaningfully)
 - Rust API Guidelines
 - If an API smells like OOP factories and inheritance trees, redesign toward builders, ownership-honest APIs, and few trait-supertrait pyramids
+- In an immutable API, return `Option<&T>` rather than `&Option<T>`. Use `as_deref` when the stored value is `Box<T>` or `String`. Callers can map, filter, or yield a computed `None` without depending on storage, and `Option<&T>` is pointer-sized.
+- Take `&mut Option<T>` only when the caller inserts or clears the variant. Take `Option<T>` by value when the callee needs ownership.
+- Do not make callers go through your `Deref` container. Return `&str`, `&[T]`, `T`, or `impl AsRef<_>` for the value they need.
+- Take `impl Into<T>` at a public edge when the conversion is the ergonomic point. On a hot or internal path, take the concrete type so the allocation and the inference stay obvious.
+- A semicolon turns a tail expression into `()`. When a `match` or `if` arm should produce a value, leave it as an expression (`0 => "zero"`, not `0 => "zero";`).
+- Deny `unsafe_op_in_unsafe_fn`. Each unsafe operation inside an `unsafe fn` still sits in its own `unsafe` block.
+- For long-lived immutable shared data, store `Arc<[T]>` or `Arc<str>` (`Rc<[T]>` on one thread, `Box<[T]>` for a single owner). Build in `Vec` or `String`, then freeze. `Arc<String>` and `Arc<Vec<_>>` keep a spare capacity field and an extra pointer hop.
+- Use `Option` when absence is the whole story, and `Result` when the caller must branch on why. Short-circuit a fallible iterator with `collect::<Result<Vec<_>, _>>()`.
+- When a plugin or strategy trait must be `dyn` and the method is async, return `Pin<Box<dyn Future<Output = ...> + Send + 'a>>`. Prefer a static `async fn` in the trait when dynamic dispatch is not required.
 
 ### 7. Compatibility
 
@@ -152,7 +176,7 @@ Cost rises with every skipped upgrade cycle.
 
 Adapt to the crate. Minimum credible set:
 
-1. `cargo test` + Clippy + rustfmt
+1. `cargo test` + Clippy + rustfmt, and deny `unsafe_op_in_unsafe_fn` on crates that contain `unsafe`
 2. Miri for `unsafe` / allocator / concurrency-sensitive tests
 3. At least one of: proptest/quickcheck, mutants, or fuzz on parsers / codecs
 4. Loom and/or Kani gated to the modules that need them
@@ -174,6 +198,7 @@ When finishing work under this skill, report:
 - Happy-path-only tests
 - Wall-clock microbenchmarks on a shared machine as the sole perf signal
 - `pub` everything, boolean soup, type aliases for distinct units
+- `Arc<String>` or `Arc<Vec<_>>` for data that is already immutable, and read APIs that return `&Option<T>` or a `Deref` newtype
 - Leaking hyper / serde / tokio types into a stable public API without intent
 - Silent TODO debt and forever-pinned dependency versions with no reminder
 - Claiming this quality bar without Miri, property tests, misuse-resistant types, or decision docs
