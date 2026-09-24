@@ -2,193 +2,178 @@
 name: impeccable-rust
 description: >-
   Use when writing, reviewing, hardening, or designing Rust for high-stakes or
-  long-lived crates — libraries, services, or systems where faults must not be
-  the software's fault. Applies Gjengset's "Towards Impeccable Rust" practices:
-  exhaustive testing, trustworthy benchmarks, misuse-resistant APIs, documented
-  decisions, semver hygiene, and deliberate dependency maintenance.
+  long-lived crates. Checklist for exhaustive testing, trustworthy benchmarks,
+  misuse-resistant APIs, decision records, semver hygiene, and deliberate
+  dependency maintenance.
 ---
 
 # Impeccable Rust
 
-Grounded in Jon Gjengset's Rust Nation UK 2024 talk *Towards Impeccable Rust*
-([video](https://youtu.be/qfknfCsICUM), [slides](https://jon.thesquareplanet.com/slides/towards-impeccable-rust/)).
-
-**Impeccable** means *free from fault or blame*. The software can still fail
-(bad spec, bad hardware), but the *implementation* should not be to blame.
-Perfection is impossible; strive to get close. There is **no single trick**.
-
-Use this skill when the user asks for impeccable / production-grade / critical
-Rust quality, or whenever you are designing or reviewing Rust that must stay
-dependable under misuse, load, and time.
+Faults may still happen outside the code (spec, hardware, ops). The
+implementation should not be what is to blame. There is no single trick. Heavy
+tools cost time and compute; spend a deliberate risk budget where failure
+hurts.
 
 ## Operating rules
 
-1. Prefer making incorrect use **inexpressible** over documenting "don't do that."
-2. Treat "it works" as insufficient — prove it is not broken under chaos and edge cases.
-3. Prefer **automation that catches human misses** (Miri, Loom, Kani, semver checks, cargo-vet) over hope.
-4. When you accept a downside or skip a corner case, **write it down** so knowledge is not lost.
-5. Stagnation is a choice with rising cost — surface it; do not silently defer forever.
-6. These practices are expensive (time, money, compute). Spend a deliberate **risk budget** — apply the heavy tools where failure actually hurts.
+1. Prefer making incorrect use inexpressible over documenting "do not do that."
+2. Treat "it works" as insufficient. Prove it is not broken under chaos and edge cases.
+3. Prefer automation that catches human misses (Miri, Loom, Kani, semver checks, cargo-vet).
+4. When you accept a downside or skip a corner case, write it down.
+5. Stagnation is a choice with rising cost. Surface it; do not silently defer forever.
+6. Apply expensive verification where failure actually hurts.
 
 ## Checklist (run what applies)
 
 Work through each section that fits the change. Skip sections that clearly do
-not apply (e.g. no concurrency → skip Loom). Say what you ran and what you
-deliberately skipped.
+not apply (for example, no concurrency means skip Loom). Say what you ran and
+what you deliberately skipped.
 
-### 1. Testing — be paranoid
+### 1. Testing
 
-- Assert invariants liberally; panics on broken assumptions beat silent wrongness.
-- Remember: **it works is not the same as it's not broken**.
-- Run **Miri** on tests that touch `unsafe`, custom allocators, or subtle provenance (`cargo +nightly miri test`). Miri catches UB and leaks even when nothing panics.
-- Use **sanitizers** (ASan / TSan / etc.) when threading or memory access patterns matter beyond what Miri covers.
-- Add tests for **error paths**, not only the happy path.
-- **Error litmus test:** temporarily replace `return Err(...)` with `continue` (or otherwise skip the error return). If the suite still passes, error-path coverage is broken. Tests must trigger and verify the exact `Err`.
+- Assert invariants. Panics on broken assumptions beat silent wrongness.
+- It works is not the same as it is not broken.
+- Run Miri on tests that touch `unsafe`, custom allocators, or subtle provenance (`cargo +nightly miri test`).
+- Use sanitizers (ASan, TSan, and so on) when threading or memory access patterns matter beyond Miri.
+- Test error paths, not only the happy path.
+- Error litmus test: temporarily replace `return Err(...)` with `continue` (or otherwise skip the error return). If the suite still passes, error-path coverage is broken. Tests must trigger and verify the exact `Err`.
 
-### 2. Embrace chaos
+### 2. Chaos
 
-Anything that can go wrong will, at the worst time. Add at least one chaos layer that fits:
+Add at least one chaos layer that fits:
 
 | Kind | Tools |
 |------|--------|
-| Async / sync scheduling chaos | `turmoil`, `shuttle` |
-| Value chaos | `quickcheck`, `proptest` |
-| Logic chaos | `cargo-mutants` |
+| Async / sync scheduling | `turmoil`, `shuttle` |
+| Value | `quickcheck`, `proptest` |
+| Logic | `cargo-mutants` |
 
-For reimplementations (custom map, codec, parser), property-test against a trusted oracle (e.g. std) and/or assert broad invariants such as "never panics."
+For reimplementations (custom map, codec, parser), property-test against a trusted oracle (for example, std) and assert broad invariants such as "never panics."
 
-### 3. Be exhaustive (where you can)
+### 3. Exhaustive verification
 
-- **Loom** — all distinguishable concurrent executions for lock-free / atomic / custom sync code.
-- **Kani** — all distinguishable inputs (symbolic / model checking), especially around `unsafe` and high-risk logic.
+- Loom for all distinguishable concurrent executions of lock-free, atomic, or custom sync code.
+- Kani for symbolic / model-checked inputs around `unsafe` and high-risk logic.
 
-Prefer exhaustive tools on the *smallest core* that must be correct; keep the surface area model-checkable.
+Keep exhaustive tools on the smallest core that must be correct.
 
-### 4. Benchmarks — know thyself
+### 4. Benchmarks
 
-Benchmarks must capture the **entire** performance profile, not a flattering loop:
+Cover the full performance profile:
 
 - Pathological cases
-- Micro **and** macro / end-to-end
-- Under, at, and **over** capacity
+- Micro and end-to-end
+- Under, at, and over capacity
 - All relevant targets
 
-**Trustworthy measurements** (let CI fail on regression):
+Trustworthy measurements (CI should fail on regression):
 
-- Prefer instruction-count / callgrind-style metrics over wall time alone (e.g. `iai-callgrind`).
-- Interleave old and new (e.g. `tango`) to reduce noise.
-- Minimize noise: dedicated host, leave headroom (<100% load).
+- Prefer instruction-count / callgrind-style metrics over wall time alone (for example, `iai-callgrind`).
+- Interleave old and new (for example, `tango`) to cut noise.
+- Use a dedicated host and leave headroom (under 100% load).
 
-**Measure all that matters**, not just speed:
+Measure what matters, not only speed:
 
-- Throughput and *goodput* (a flood of 500 responses can look like high throughput but zero useful work)
+- Throughput and goodput (a flood of 500 responses can show high throughput with zero useful work)
 - Memory (average and max)
-- Latency distributions (not only mean)
-- Outcomes: simulate realistic inputs → measure outputs → compare to ground truth
-- Prefer the **real deployment target** (e.g. a Pi or fleet SKU), not only a beefy CI box
+- Latency distributions, not only the mean
+- Outcomes: realistic inputs, measured outputs, compare to ground truth
+- Prefer the real deployment target, not only a beefy CI box
 
-**Simple benchmarks lie.** Record how you load the system (open / closed / partly-open), what statistic you report (mean, median, histogram, CDF), and how you decide a regression (y > x is not enough).
+Record how you load the system (open, closed, partly-open), which statistic you report (mean, median, histogram, CDF), and how you decide a regression. "y is greater than x" is not enough.
 
-### 5. Documentation — preserve knowledge
+### 5. Documentation
 
-**Document decisions taken** (bus-factor insurance)
+Decisions:
 
-- Alternatives discarded and why (so the next engineer does not retry them)
-- Downsides explicitly accepted and why
-- Prefer short ADRs / YADRs / design notes — any durable record beats none
+- Alternatives discarded and why
+- Downsides accepted and why
+- Short ADRs, YADRs, or design notes
 
-**Document what's not there**
+What is not there:
 
-- Missing corner-case handling — tell callers what the code cannot do; a silent `todo!()` is a landmine
+- Missing corner-case handling. Tell callers what the code cannot do. A silent `todo!()` is a landmine.
 - Known future optimizations
-- Deliberate absence of impls (e.g. no `From` for a reason)
+- Deliberate absence of impls (for example, no `From` for a reason)
 
-### 6. Misuse resistance — "you're holding it wrong" is unacceptable
+### 6. Misuse resistance
 
 Make misuse inexpressible:
 
-- **Newtypes**, not type aliases (`Meters(u64)` vs `Miles(u64)`)
-- **Typestates** (`Rocket<Ground>` vs `Rocket<Air>`)
-- **Two-phase structs** (e.g. raw `TomlConfig` vs validated `ResolvedConfig`)
-- **Enums over booleans** (especially multi-bool parameter lists)
-- **Enums for linked arguments** (encode linked `bool` + `Option` pairs as one type so conflicting states are impossible)
+- Newtypes, not type aliases (`Meters(u64)` vs `Miles(u64)`)
+- Typestates (`Rocket<Ground>` vs `Rocket<Air>`)
+- Two-phase structs (raw `TomlConfig` vs validated `ResolvedConfig`)
+- Enums over booleans, especially multi-bool parameter lists
+- Enums for linked arguments (encode linked `bool` + `Option` pairs as one type so conflicting states cannot be constructed)
 
-Follow idioms so surprise does not become misuse:
+Idioms:
 
-- Clippy (deny or warn meaningfully in CI)
-- [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/)
-- If an API smells like OOP / Java / Python / C factories and inheritance trees, redesign toward Rust idioms (builders, ownership-honest APIs, few trait-supertrait pyramids)
+- Clippy in CI (deny or warn meaningfully)
+- Rust API Guidelines
+- If an API smells like OOP factories and inheritance trees, redesign toward builders, ownership-honest APIs, and few trait-supertrait pyramids
 
-### 7. Compatibility — minimize hazards
+### 7. Compatibility
 
 Public surface area is a liability. Prefer:
 
 - `-> impl Trait` over naming concrete return types you may want to change
-- Private fields; expose accessors or builders instead of `pub` fields
-- Avoid leaking **public dependencies** in args, returns, trait impls, and re-exports (upgrading them later becomes a breaking change)
-- Prefer **non-pub inherent methods** over blanket `impl From` / other always-public trait impls when the coupling is accidental
+- Private fields with accessors or builders instead of `pub` fields
+- No leaking public dependencies in args, returns, trait impls, or re-exports
+- Non-pub inherent methods over blanket `impl From` / always-public trait impls when the coupling is accidental
 
-Automate what humans miss:
+Automate:
 
 - `cargo-semver-checks`
-- `cargo-public-api` (high-level API diff awareness)
+- `cargo-public-api`
 
-Educate callers on semver expectations; keep a **simple, stable core**.
+Keep a simple, stable core. Document semver expectations for callers.
 
-### 8. Dependencies — knowledge is everything
+### 8. Dependencies
 
-Healthy skepticism, then:
+1. Track the complete dependency closure across every deployment that matters.
+2. Join against known issues (for example, RUSTSEC).
+3. Vet for unknown issues (`cargo-vet`, public or internal).
 
-1. **Track** the complete dependency closure across every deployment / device that matters
-2. **Join** against known issues (e.g. RUSTSEC)
-3. **Vet** for unknown issues (`cargo-vet`, public or internal)
+Be able to answer operational questions such as which deployed units still run a vulnerable transitive crate.
 
-Ask operational questions you can actually answer, e.g. which deployed units still run a vulnerable transitive crate.
+### 9. Stagnation as a choice
 
-### 9. Make stagnation a recurrent choice
+Loud reminders when you are behind or dependencies are dead (Dependabot / Renovate). Reduce friction:
 
-Have loud reminders when you are behind or dependencies are dead (Dependabot / Renovate). Reduce friction to catch up:
-
-- Auto-merging dependency bump PRs (with tests)
+- Auto-merge dependency bump PRs that pass tests
 - Budgeted maintenance time
 - Prefer upstreaming over long-lived forks
-- Wrap unstable dependencies behind a stable internal façade
-- Treat **rustc / edition** lag the same way as crate lag
+- Wrap unstable dependencies behind a stable internal facade
+- Treat rustc / edition lag the same as crate lag
 
 Cost rises with every skipped upgrade cycle.
 
-## Suggested CI shape (adapt to the crate)
+## CI shape
 
-Minimum credible set for a serious crate:
+Adapt to the crate. Minimum credible set:
 
 1. `cargo test` + Clippy + rustfmt
-2. Miri job for `unsafe` / allocator / concurrency-sensitive tests
+2. Miri for `unsafe` / allocator / concurrency-sensitive tests
 3. At least one of: proptest/quickcheck, mutants, or fuzz on parsers / codecs
-4. Loom and/or Kani jobs gated to the modules that need them
+4. Loom and/or Kani gated to the modules that need them
 5. Benchmark regression gate with non-noisy metrics
 6. `cargo deny` / RUSTSEC audit + optional `cargo-vet`
 7. `cargo-semver-checks` on published API crates
 
-## Review / PR comment style
+## Review report
 
-When reviewing or finishing work under this skill, report briefly:
+When finishing work under this skill, report:
 
-- **Proven:** what verification ran or what type-level misuse was made impossible
-- **Documented:** decisions and intentional gaps written down
-- **Deferred:** what was skipped and why (with a follow-up if high stakes)
-- **Compat / deps:** any new public surface or dependency hazard introduced
+- Proven: verification run, or type-level misuse made impossible
+- Documented: decisions and intentional gaps written down
+- Deferred: what was skipped and why (follow-up if high stakes)
+- Compat / deps: any new public surface or dependency hazard
 
 ## Anti-patterns
 
 - Happy-path-only tests
-- "It passed on my machine" timing microbenchmarks as the sole perf signal
-- `pub` everything / boolean soup / type aliases for distinct units
-- Leaking hyper/serde_/tokio types (etc.) into a stable public API without intent
+- Wall-clock microbenchmarks on a shared machine as the sole perf signal
+- `pub` everything, boolean soup, type aliases for distinct units
+- Leaking hyper / serde / tokio types into a stable public API without intent
 - Silent TODO debt and forever-pinned dependency versions with no reminder
-- Claiming impeccable quality without any of: Miri, property tests, misuse-resistant types, or decision docs
-
-## Sources
-
-- Talk: https://youtu.be/qfknfCsICUM
-- Slides: https://jon.thesquareplanet.com/slides/towards-impeccable-rust/
-- PDF: https://jon.thesquareplanet.com/slides/towards-impeccable-rust/export.pdf
+- Claiming this quality bar without Miri, property tests, misuse-resistant types, or decision docs
