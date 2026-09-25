@@ -206,7 +206,7 @@ Assign every failure class the crate actually has. This is a decision table, not
 | Mathematical kernel | Lean, Verus, or Kani when a named property justifies it |
 | Several DSLs or frontends | Differential or conformance tests |
 | Public API break | `cargo-semver-checks`, `cargo-public-api` |
-| Vulnerable or unvetted dependency | `cargo deny` / RUSTSEC, `cargo-vet` |
+| Vulnerable or unvetted dependency (any crate with dependencies) | `cargo deny` / RUSTSEC, `cargo-vet` |
 | Performance regression | Benchmark gate on non-noisy metrics |
 
 Deterministic logic stays on tests. It becomes a mathematical kernel only when a named property must hold for every input and tests cannot close it. Add a formal tool only for a row whose preferred owner is that tool.
