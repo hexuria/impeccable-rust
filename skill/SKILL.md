@@ -4,7 +4,8 @@ description: >-
   Use when writing, reviewing, hardening, or designing Rust for high-stakes or
   long-lived crates. Checklist for exhaustive testing, trustworthy benchmarks,
   data layout, misuse-resistant APIs and everyday API idioms, decision records,
-  semver hygiene, and deliberate dependency maintenance.
+  semver hygiene, deliberate dependency maintenance, and risk-driven formal
+  verification with anti-drift rules.
 ---
 
 # Impeccable Rust
@@ -22,12 +23,15 @@ hurts.
 4. When you accept a downside or skip a corner case, write it down.
 5. Stagnation is a choice with rising cost. Surface it; do not silently defer forever.
 6. Apply expensive verification where failure actually hurts.
+7. Give every important failure mode one owner. Link any second model to production Rust before treating either result as evidence.
 
 ## Checklist (run what applies)
 
 Work through each section that fits the change. Skip sections that clearly do
 not apply (for example, no concurrency means skip Loom). Say what you ran and
-what you deliberately skipped.
+what you deliberately skipped. A new verifier, a second semantic model, or a
+concurrency, recovery, or persistence change also follows Verification
+architecture.
 
 ### 1. Testing
 
@@ -55,7 +59,7 @@ For reimplementations (custom map, codec, parser), property-test against a trust
 - Loom for all distinguishable concurrent executions of lock-free, atomic, or custom sync code.
 - Kani for symbolic / model-checked inputs around `unsafe` and high-risk logic.
 
-Keep exhaustive tools on the smallest core that must be correct.
+Keep exhaustive tools on the smallest core that must be correct. Loom owns that small concurrent implementation. Kani owns symbolic inputs on that core. System interleavings, deadlock, liveness, and recovery architecture are assigned under Verification architecture.
 
 ### 4. Benchmarks
 
@@ -172,6 +176,128 @@ Loud reminders when you are behind or dependencies are dead (Dependabot / Renova
 
 Cost rises with every skipped upgrade cycle.
 
+## Verification architecture
+
+> Every important failure mode has an owner, every verifier has a reason to exist, claims match their limits, production Rust is checked against the intended semantics, and independent models cannot silently drift.
+
+More tools are not a stronger architecture. Inspect the crate, assign an owner to each real failure, and add a model only when the Rust checks cannot own that failure.
+
+### Probe before recommending
+
+- Read the workspace before naming a tool: `Cargo.toml` and workspace members, `src/`, `crates/`, `tests/`, `benches/`, `fuzz/`, `scripts/`, `.github/workflows/`, `AGENTS.md`, `CONTRIBUTING.md`, `docs/`, and any `formal/`, `spec/`, or `proof/` tree.
+- Search for state machines, reducers, events, commands, effects, workers, schedulers, queues, retry, cancel, timeouts, recovery, journals, replay, transactions, persistence, locks, atomics, channels, spawn, `unsafe`, FFI, protocols, parsers, and serialization.
+- Record verifiers already present: proptest, quickcheck, cargo-fuzz, Loom, Miri, Kani, Verus, Creusot, TLA+, TLC, Lean, Coq, Alloy, and any written specification or model check.
+- Treat an installed tool as an existing owner. Recommend another only when a failure class below has no owner.
+
+### Risk to owner
+
+Assign every failure class the crate actually has. This is a decision table, not a stack to install.
+
+| Failure class | Preferred owner |
+|---------------|-----------------|
+| Deterministic logic | Unit, property, or differential tests |
+| Untrusted input | Fuzz |
+| Unsafe or provenance | Miri, plus fuzz or Kani |
+| Small concurrent implementation | Loom |
+| System interleavings, deadlock, liveness, or recovery architecture | TLA+ |
+| Crash persistence | Crash and fault tests; add TLA+ when recovery architecture is the risk |
+| Mathematical kernel | Lean, Verus, or Kani when a named property justifies it |
+| Several DSLs or frontends | Differential or conformance tests |
+
+Deterministic logic stays on tests. Add a formal tool only for a row whose preferred owner is that tool.
+
+### TLA+
+
+- Recommend TLA+ when correctness depends on multiple actors, interleavings, workers, schedulers, queues, ownership handoff, retry, timeout, cancellation, crashes, recovery, distributed state, deadlock freedom, or liveness.
+- TLA+ owns that system-level behavior. Leave a trivial deterministic function on the Rust test row.
+- When a model exists, document its state variables, actions, invariants, liveness properties, fairness assumptions, bounds, abstractions, and the production Rust each piece maps to.
+- A TLC run is bounded model-checking inside those bounds. State the bounds. It is not an unrestricted proof.
+
+### Lean and other provers
+
+- Add Lean, or a similar prover, only for a small kernel where a theorem is the point: replay algebra, effect identity or uniqueness, normalization, monotonicity, ordering, ranking, a scheduler algorithm, capability or policy composition, or another deterministic transformation that tests do not close.
+- Every artifact answers one question: what theorem does this establish that Rust tests do not? A weak answer means the prover is not justified.
+- Skip a Lean enum or step function whose only job is to mirror a Rust enum or reducer.
+
+### Semantic duplication
+
+- Flag a Rust reducer, a TLA+ transition relation, a Lean step function, and a fixture interpreter that encode the same steps. Four green suites can still be four different semantics.
+- Classify each extra model as a necessary abstraction, a formal specification, a useful differential implementation, accidental duplication, or verification theater.
+- A necessary abstraction drops detail so a different failure class can be checked, and a conformance link says what was dropped. Theater is a green run with no owner, no stated bounds, and no link to production Rust.
+
+### Conformance
+
+- When more than one model is necessary, pin them with a canonical transition corpus, model-generated traces, trace replay, property-based equivalence, differential execution, shared fixtures, canonical serialization, or runtime assertions.
+- Prefer records of `initial_state`, `event`, `expected_next_state`, and `expected_effects`, or the sequence form `initial_state`, `events[]`, `expected_states[]`, `expected_effects[]`.
+- Production Rust should execute those traces when that is practical. Require that executed link before treating similar sources, or two green suites, as the same semantics.
+
+### DSL and workflow
+
+- Verify workflow or DSL meaning at the compile step into a shared Rust IR. The frontend is an optional producer of that IR.
+- Rust owns I/O, effects, networking, persistence, scheduling, workers, resource management, and runtime recovery.
+- A verified frontend does not become the runtime architecture.
+
+### Anti-drift
+
+Copy this into `AGENTS.md` or `CONTRIBUTING.md` and follow it on later changes:
+
+> Any change to observable semantics names the verification boundary it affects.
+
+- Concurrency, interleaving, scheduling, retry, cancellation, recovery, ownership, or liveness updates the system model, or the change states why that model is unaffected.
+- Executable Rust behavior updates the Rust verification layer. A theorem-owned kernel updates its proof. Workflow or DSL semantics update conformance or differential tests.
+- Do not clone one state machine across Rust, TLA+, Lean, and a DSL for symmetry. Passing independent suites does not establish equivalence.
+
+### Verification impact
+
+Adapt this declaration to the repository. Omit boxes the crate cannot affect.
+
+```
+Verification impact
+
+[ ] Pure Rust deterministic behavior
+[ ] Concurrency / interleaving
+[ ] System model
+[ ] Crash-recovery / replay
+[ ] Persistence
+[ ] TLA+
+[ ] Proof kernel
+[ ] Workflow / DSL
+[ ] Unsafe / memory
+[ ] Property-test / fuzz surface
+[ ] No verification architecture impact
+
+Reason:
+Affected invariants:
+Tests or proofs updated:
+```
+
+### Modes
+
+Audit is the default and is read-only. Leave the tree unchanged on the first pass. Report:
+
+- Architecture, risk, and current-verifier maps
+- Duplication, drift, gaps, and the owner of each important failure
+- Each recommendation marked REQUIRED, USEFUL, OPTIONAL, NOT JUSTIFIED, or REMOVE
+- A conformance and anti-drift plan, a CI split, and a migration order
+
+Implementation starts after that report, in this order:
+
+1. Add missing conformance.
+2. Add the high-value Rust checks the risk table already names.
+3. Write down semantic ownership.
+4. Strengthen a formal model only where it owns a real failure.
+5. Remove accidental duplication.
+6. Simplify CI.
+
+Never remove a verifier before naming the guarantee that replaces it.
+
+### Terminology
+
+- Name the claim with one of these: compiler-enforced, type-enforced, unit-tested, integration-tested, property-tested, fuzz-tested, model-checked, bounded model-checked, exhaustively enumerated under stated bounds, theorem-proven, differentially tested, conformance-tested, crash-tested, fault-tested, or simulation-tested.
+- State the bounds and the assumptions next to the claim.
+- If a formal model has no refinement or conformance relationship to production Rust, say so in the report.
+- Reserve "proof" for a theorem with stated assumptions. A test suite, a fuzz run, and a bounded model check are not proofs.
+
 ## CI shape
 
 Adapt to the crate. Minimum credible set:
@@ -184,14 +310,21 @@ Adapt to the crate. Minimum credible set:
 6. `cargo deny` / RUSTSEC audit + optional `cargo-vet`
 7. `cargo-semver-checks` on published API crates
 
+Split cost around that set. Skip a tool the risk table does not justify.
+
+- Pull request: `cargo fmt`, `cargo check`, Clippy, unit and integration tests, property tests that cover the diff, plus small Loom or Kani runs, small model checks, and conformance tests when those owners exist.
+- Nightly: larger fuzz campaigns, broader Miri, large TLC state spaces, fault injection, stress tests, large Loom scenarios, and deterministic simulation.
+- Release: the full matrix when a failure class in the risk table justifies the cost.
+
 ## Review report
 
 When finishing work under this skill, report:
 
-- Proven: verification run, or type-level misuse made impossible
+- Proven: verification run, or type-level misuse made impossible. Name the claim with the terminology in Verification architecture, including bounds.
 - Documented: decisions and intentional gaps written down
 - Deferred: what was skipped and why (follow-up if high stakes)
 - Compat / deps: any new public surface or dependency hazard
+- Verification: the owner of each failure mode this change can break, and any conformance or model update
 
 ## Anti-patterns
 
@@ -202,3 +335,6 @@ When finishing work under this skill, report:
 - Leaking hyper / serde / tokio types into a stable public API without intent
 - Silent TODO debt and forever-pinned dependency versions with no reminder
 - Claiming this quality bar without Miri, property tests, misuse-resistant types, or decision docs
+- A second copy of the same state machine in TLA+, Lean, or test fixtures with no conformance link to production Rust
+- Calling a bounded model check, a fuzz campaign, or a green unit suite a proof
+- Adding a prover or a system model to mirror logic that unit and property tests already own
