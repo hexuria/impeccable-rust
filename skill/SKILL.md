@@ -24,7 +24,7 @@ hurts.
 4. When you accept a downside or skip a corner case, write it down.
 5. Stagnation is a choice with rising cost. Surface it; do not silently defer forever.
 6. Apply expensive verification where failure actually hurts.
-7. Give every important failure mode an owner. Link any second model to production Rust before treating either result as evidence.
+7. Give every important failure mode an owner. Link any second model to production Rust before treating its results as evidence about the Rust.
 
 ## Checklist (run what applies)
 
@@ -39,9 +39,9 @@ architecture.
 - Assert invariants. Panics on broken assumptions beat silent wrongness.
 - It works is not the same as it is not broken.
 - Run Miri on tests that touch `unsafe`, custom allocators, or subtle provenance (`cargo +nightly miri test`).
-- Use sanitizers (ASan, TSan, and so on) when threading or memory access patterns matter beyond Miri.
+- Use sanitizers (nightly `-Zsanitizer=address` or `thread`) when threading, memory access, or FFI matters beyond what Miri can run.
 - Test error paths, not only the happy path.
-- Error litmus test: temporarily replace `return Err(...)` with `continue` (or otherwise skip the error return). If the suite still passes, error-path coverage is broken. Tests must trigger and verify the exact `Err`.
+- Error litmus test: temporarily replace `return Err(...)` with `continue` inside a loop (or otherwise skip the error return). If the suite still passes, error-path coverage is broken. Tests must trigger and verify the exact `Err`.
 
 ### 2. Chaos
 
@@ -49,7 +49,8 @@ Add at least one chaos layer that fits:
 
 | Kind | Tools |
 |------|--------|
-| Async / sync scheduling | `turmoil`, `shuttle` |
+| Thread and task schedules | `shuttle` |
+| Network faults, partitions, crashes | `turmoil` |
 | Value | `quickcheck`, `proptest` |
 | Logic | `cargo-mutants` |
 
@@ -57,7 +58,7 @@ For reimplementations (custom map, codec, parser), property-test against a trust
 
 ### 3. Exhaustive verification
 
-- Loom for all distinguishable concurrent executions of lock-free, atomic, or custom sync code.
+- Loom for the distinguishable concurrent executions of lock-free, atomic, or custom sync code. Its memory model is partial (no load buffering, `SeqCst` treated as `AcqRel`), so state that limit with the claim.
 - Kani for symbolic / model-checked inputs around `unsafe`, and on high-risk logic whose named property must hold for every input.
 
 Keep exhaustive tools on the smallest core that must be correct. Loom owns that small concurrent implementation. Kani owns symbolic inputs on that core. System interleavings, deadlock, liveness, and recovery architecture are assigned under Verification architecture.
@@ -73,8 +74,8 @@ Cover the full performance profile:
 
 Trustworthy measurements (CI should fail on regression):
 
-- Prefer instruction-count / callgrind-style metrics over wall time alone (for example, `iai-callgrind`).
-- Interleave old and new (for example, `tango`) to cut noise.
+- Prefer instruction-count / callgrind-style metrics over wall time alone (for example, `gungraun`, formerly `iai-callgrind`).
+- Interleave old and new (for example, `tango-bench`) to cut noise.
 - Use a dedicated host and leave headroom (under 100% load).
 
 Measure what matters, not only speed:
@@ -95,7 +96,7 @@ Measure first. Apply these only when a profile shows the hot path is memory- or 
 - Use struct-of-arrays for a hot loop that touches a field subset, so positions are not dragged along with cold names and flags. Keep array-of-structs when each access needs the whole record, or when the collection is tiny.
 - Store a sparse `Option` or `bool` out of band (side map, bitset, or parallel array keyed by id) so a rare field does not widen every hot row. Leave the field in the struct when most rows have it.
 - Box a large rare enum variant so the enum is not sized to that arm, and assert `size_of` in tests so a fatter variant fails CI. Skip the box when the variants are similar in size, or when the extra indirection loses in a profile.
-- Set `repr` and alignment when layout is part of the contract: `repr(C)` for FFI or stable bytes, `repr(align(64))` so a hot atomic does not share a cache line. Leave everyday structs on rustc's default field order. Reach for `packed` only after a measurement shows the padding costs more than unaligned access.
+- Set `repr` and alignment when layout is part of the contract: `repr(C)` for FFI or stable bytes, `repr(align(128))` or `crossbeam_utils::CachePadded` so a hot atomic does not share a cache line (64 can be too small on x86_64 and aarch64). Leave everyday structs on rustc's default field order. Reach for `packed` only after a measurement shows the padding costs more than unaligned access.
 
 ### 5. Documentation
 
@@ -139,13 +140,13 @@ Idioms:
 - Deny `unsafe_op_in_unsafe_fn`, so unsafe operations inside an `unsafe fn` still need an explicit `unsafe` block.
 - For long-lived immutable shared data, store `Arc<[T]>` or `Arc<str>` (`Rc<[T]>` on one thread, `Box<[T]>` for a single owner). Build in `Vec` or `String`, then freeze. `Arc<String>` and `Arc<Vec<_>>` keep a spare capacity field and an extra pointer hop.
 - Use `Option` when absence is the whole story, and `Result` when the caller must branch on why. Short-circuit a fallible iterator with `collect::<Result<Vec<_>, _>>()`.
-- When a plugin or strategy trait must be `dyn` and the method is async, return `Pin<Box<dyn Future<Output = ...> + Send + 'a>>`. Prefer a static `async fn` in the trait when dynamic dispatch is not required.
+- When a plugin or strategy trait must be `dyn` and the method is async, return `Pin<Box<dyn Future<Output = ...> + Send + 'a>>`. Prefer a static `async fn` in the trait when dynamic dispatch is not required. In a public trait, write `fn run(&self) -> impl Future<Output = T> + Send` so callers can rely on `Send`.
 
 ### 7. Compatibility
 
 Public surface area is a liability. Prefer:
 
-- `-> impl Trait` over naming concrete return types you may want to change
+- `-> impl Trait` over naming concrete return types you may want to change (auto traits such as `Send` still leak through it)
 - Private fields with accessors or builders instead of `pub` fields
 - No leaking public dependencies in args, returns, trait impls, or re-exports
 - Non-pub inherent methods over blanket `impl From` / always-public trait impls when the coupling is accidental
@@ -185,10 +186,10 @@ More tools are not a stronger architecture. Inspect the crate, assign an owner t
 
 ### Probe before recommending
 
-- Read the workspace before naming a tool: `Cargo.toml` and workspace members, `src/`, `crates/`, `tests/`, `benches/`, `fuzz/`, `scripts/`, `.github/workflows/`, `AGENTS.md`, `CONTRIBUTING.md`, `docs/`, and any `formal/`, `spec/`, or `proof/` tree.
+- Read the workspace before naming a tool: `Cargo.toml` and workspace members, `src/`, `crates/`, `tests/`, `benches/`, `fuzz/`, `scripts/`, `.github/workflows/` or other CI and task files (`xtask`, `justfile`, `Makefile`), `AGENTS.md`, `CONTRIBUTING.md`, `docs/`, and any `formal/`, `spec/`, or `proof/` tree.
 - Search for state machines, reducers, events, commands, effects, workers, schedulers, queues, retry, cancel, timeouts, recovery, journals, replay, transactions, persistence, locks, atomics, channels, spawn, `unsafe`, FFI, protocols, parsers, and serialization.
-- Record verifiers already present: proptest, quickcheck, cargo-fuzz, cargo-mutants, Loom, shuttle, turmoil, Miri, sanitizers, Kani, Verus, Creusot, TLA+, TLC, Lean, Coq, Alloy, and any written specification or model check.
-- Treat an installed tool as an existing owner. Recommend another only when a failure class below has no owner.
+- Record verifiers already present: proptest, quickcheck, cargo-fuzz, cargo-mutants, Loom, shuttle, turmoil, Miri, sanitizers, Kani, Verus, Creusot, TLA+, TLC, Lean, Rocq (Coq), Alloy, and any written specification or model check.
+- Count a tool as an owner only where it runs, in CI or another enforced gate, against that failure class. Recommend another only when a failure class below has no owner.
 
 ### Risk to owner
 
@@ -198,7 +199,7 @@ Assign every failure class the crate actually has. This is a decision table, not
 |---------------|-----------------|
 | Deterministic logic | Unit, property, or differential tests |
 | Untrusted input | Fuzz |
-| Unsafe or provenance | Miri, plus fuzz or Kani |
+| Unsafe or provenance | Miri, plus fuzz or Kani; sanitizers for FFI and other code Miri cannot run |
 | Small concurrent implementation | Loom |
 | System interleavings, deadlock, liveness, or recovery architecture | TLA+ for the design; `turmoil` or `shuttle` for the Rust that implements it |
 | Crash persistence | Crash and fault tests; add TLA+ when recovery architecture is the risk |
@@ -215,7 +216,7 @@ Deterministic logic stays on tests. It becomes a mathematical kernel only when a
 - Recommend TLA+ when correctness depends on how multiple actors interleave: workers, schedulers, queues, ownership handoff, retry, timeout, cancellation, crashes, recovery, distributed state, deadlock freedom, or liveness.
 - TLA+ owns that system-level design. A retry or timeout inside one task, or a trivial deterministic function, stays on Rust tests and simulation.
 - When a model exists, document its state variables, actions, invariants, liveness properties, fairness assumptions, bounds, abstractions, and the production Rust each piece maps to.
-- A TLC run is bounded model-checking inside those bounds. State the bounds. It is not an unrestricted proof.
+- TLC exhaustively enumerates the finite instance its configuration sets; its simulation mode only samples, and Apalache checks to a depth bound. State the bounds. None of these runs is an unrestricted proof; a checked TLAPS proof is.
 
 ### Lean and other provers
 
@@ -247,7 +248,7 @@ Follow this block on every change. In implementation mode, also copy the whole b
 
 > Any change to observable semantics names the verification boundary it affects.
 >
-> - Concurrency, interleaving, scheduling, retry, cancellation, recovery, ownership, or liveness updates the system model, or the change states why that model is unaffected.
+> - Concurrency, interleaving, scheduling, retry, cancellation, recovery, ownership handoff, or liveness updates the system model, or the change states why that model is unaffected.
 > - Executable Rust behavior updates the Rust verification layer. A theorem-owned kernel updates its proof. Workflow or DSL semantics update conformance or differential tests.
 > - Do not clone one state machine across Rust, TLA+, Lean, and a DSL for symmetry. Passing independent suites does not establish equivalence.
 
@@ -286,7 +287,7 @@ Audit mode is the default for a verification review, and for any verifier or for
 
 A requested code change is not an audit. Make it with the Rust checks that Risk to owner assigns, recommend any new formal model instead of writing it, and fill in Verification impact.
 
-Implementation mode starts after that report, or when the user asks for the verification change, in this order:
+Implementation mode starts when the user accepts that report or asks for the verification change, in this order:
 
 1. Add missing conformance for each model the audit keeps.
 2. Add the high-value Rust checks the risk table already names.
@@ -295,14 +296,14 @@ Implementation mode starts after that report, or when the user asks for the veri
 5. Remove accidental duplication.
 6. Simplify CI.
 
-Never remove a verifier before naming the guarantee that replaces it.
+Never remove a verifier until the guarantee that replaces it is named, in place, and passing.
 
 ### Terminology
 
-- Name the claim with one of these: compiler-enforced, type-enforced, unit-tested, integration-tested, property-tested, fuzz-tested, model-checked, bounded model-checked, exhaustively enumerated under stated bounds, theorem-proven, differentially tested, conformance-tested, crash-tested, fault-tested, or simulation-tested.
+- Name the claim with the narrowest of these that fits: compiler-enforced, type-enforced, unit-tested, integration-tested, property-tested, fuzz-tested, mutation-tested, Miri-checked, sanitizer-checked, model-checked, bounded model-checked, exhaustively enumerated under stated bounds, theorem-proven, differentially tested, conformance-tested, crash-tested, fault-tested, or simulation-tested.
 - State the bounds and the assumptions next to the claim.
 - If a formal model has no refinement or conformance relationship to production Rust, say so in the report.
-- Reserve "proof" for a theorem with stated assumptions. A test suite, a fuzz run, and a bounded model check are not proofs.
+- Reserve "proof" for a theorem with stated assumptions. A test suite, a fuzz run, and a bounded model check (including what Kani calls a bounded proof) are not proofs.
 
 ## CI shape
 
@@ -318,7 +319,7 @@ Adapt to the crate. Minimum credible set:
 
 Item 1 runs on every crate. Skip any other tool the risk table does not justify, and split the rest by cost:
 
-- Pull request: `cargo fmt`, `cargo check`, Clippy, unit and integration tests, property tests that cover the diff, Miri on tests that touch `unsafe`, `cargo deny`, `cargo-semver-checks` on published crates, and the benchmark gate, plus small Loom or Kani runs, small model checks, and conformance tests when those owners exist.
+- Pull request: `cargo fmt --check`, `cargo check`, Clippy, unit and integration tests, property tests that cover the diff, Miri on tests that touch `unsafe`, `cargo deny`, `cargo-semver-checks` on published crates, and the benchmark gate, plus small Loom or Kani runs, small model checks, and conformance tests when those owners exist.
 - Nightly: larger fuzz campaigns, broader Miri, large TLC state spaces, fault injection, stress tests, large Loom scenarios, and deterministic simulation.
 - Release: the full matrix when a failure class in the risk table justifies the cost.
 
@@ -326,11 +327,11 @@ Item 1 runs on every crate. Skip any other tool the risk table does not justify,
 
 When finishing work under this skill, report:
 
-- Verified: each check run, or type-level misuse made impossible, named with a Terminology term and its bounds
+- Evidence: each check run, or type-level misuse made impossible, named with a Terminology term and its bounds
 - Documented: decisions and intentional gaps written down
 - Deferred: what was skipped and why (follow-up if high stakes)
 - Compat / deps: any new public surface or dependency hazard
-- Verification: the owner of each failure mode this change can break, and any conformance or model update
+- Verification: the Verification impact declaration, the owner of each failure mode this change can break, and any conformance or model update
 
 ## Anti-patterns
 
