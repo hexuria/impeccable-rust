@@ -48,6 +48,38 @@ loaders reject a folder named `skill`. For other agents, put the same folder
 wherever they load skills from, for example `.claude/skills/` or
 `.cursor/skills/` inside a project.
 
+## Toolbox
+
+The skill ships `scripts/impeccable`, which sets up and runs the command-line
+tools the skill names. The agent runs `impeccable doctor` when it starts
+verification work, and runs anything the host lacks in a pinned Linux toolbox.
+
+```sh
+alias impeccable=~/.claude/skills/impeccable-rust/scripts/impeccable
+
+impeccable doctor              # what runs here, in the toolbox, or nowhere
+impeccable setup toolbox       # build the Linux image once (needs Docker)
+impeccable run cargo kani      # any command, in Linux, on the current project
+impeccable sanitize memory     # cargo test under a sanitizer, with the right flags
+impeccable setup host          # or install the same pinned tools on this machine
+```
+
+The toolbox is a Docker image with its tools pinned in
+[`skill/toolbox/tools.txt`](skill/toolbox/tools.txt) and the
+[`Dockerfile`](skill/toolbox/Dockerfile): Miri, cargo-careful,
+sanitizers, nextest, cargo-mutants, cargo-llvm-cov, cargo-fuzz, Bolero, Kani,
+gungraun with Valgrind, TLC, cargo-semver-checks, cargo-public-api, cargo-deny,
+cargo-audit, cargo-auditable, cargo-vet, and zizmor. The image is several GB,
+and the first build takes a few minutes. It mounts your workspace at `/work` and
+keeps build output in a Docker volume, so host builds stay untouched. Editing a
+pin rebuilds the image on the next run and removes the superseded one. Library
+crates such as proptest and Loom come in through Cargo, and the provers (Lean,
+Verus, Creusot, Aeneas, hax) are not included.
+
+On macOS the toolbox runs what the host cannot: gungraun, MemorySanitizer, and
+standalone LeakSanitizer. gungraun measures cache behavior more precisely with
+`IMPECCABLE_UNCONFINED=1`, which lets it turn off address randomization.
+
 ## Use it
 
 The agent loads the skill on its own when you work on serious Rust. You can
