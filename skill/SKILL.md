@@ -2,9 +2,10 @@
 name: impeccable-rust
 description: >-
   Use when writing, reviewing, hardening, or designing Rust for high-stakes or
-  long-lived crates, or when auditing how a crate is verified (Miri, Loom,
-  Kani, TLA+, Lean). Checklist for exhaustive testing, trustworthy benchmarks,
-  data layout, misuse-resistant APIs and everyday API idioms, decision records,
+  long-lived crates, when rewriting or optimizing an implementation that
+  already works, or when auditing how a crate is verified (Miri, Loom, Kani,
+  TLA+, Lean). Checklist for exhaustive testing, trustworthy benchmarks, data
+  layout, misuse-resistant APIs and everyday API idioms, decision records,
   semver hygiene, deliberate dependency maintenance, and risk-driven formal
   verification with anti-drift rules.
 ---
@@ -19,7 +20,7 @@ hurts.
 ## Operating rules
 
 1. Prefer making incorrect use inexpressible over documenting "do not do that."
-2. Treat "it works" as insufficient. Show it is not broken under chaos and edge cases.
+2. Treat "it works" as insufficient. Show it is not broken under chaos and edge cases, and name the oracle (reference implementation, property, or model) that would catch it being wrong.
 3. Prefer automation that catches human misses (Miri, Loom, Kani, semver checks, cargo-vet).
 4. When you accept a downside or skip a corner case, write it down.
 5. Stagnation is a choice with rising cost. Surface it; do not silently defer forever.
@@ -40,6 +41,9 @@ architecture.
 - It works is not the same as it is not broken.
 - Run Miri on tests that touch `unsafe`, custom allocators, or subtle provenance (`cargo +nightly miri test`).
 - Use sanitizers (nightly `-Zsanitizer=address` or `thread`) when threading, memory access, or FFI matters beyond what Miri can run.
+- Run `cargo +nightly careful test` on the same tests as a fast second pass. It rebuilds std with debug assertions and extra UB checks, runs the FFI and syscalls Miri cannot, and adds a sanitizer with `-Zcareful-sanitizer`. It misses much of the UB Miri detects, so it runs beside Miri, not instead of it.
+- A test that passes only on retry has failed. Run `cargo nextest` with `flaky-result = "fail"` in `.config/nextest.toml` (or `--flaky-result fail`) so a FLAKY result fails the run, reproduce with `--stress-count`, and find the interleaving with Loom or `shuttle` instead of loosening the test.
+- Coverage (`cargo llvm-cov`, or `cargo llvm-cov nextest`; `--branch` needs nightly) shows what no test executes. It is a gap finder, not a claim. A covered line whose mutant `cargo mutants` reports as missed was executed and never checked; `--in-diff` scopes mutants to the change.
 - Test error paths, not only the happy path.
 - Error litmus test: temporarily replace `return Err(...)` with `continue` inside a loop (or otherwise skip the error return). If the suite still passes, error-path coverage is broken. Tests must trigger and verify the exact `Err`.
 
@@ -56,10 +60,14 @@ Add at least one chaos layer that fits:
 
 For reimplementations (custom map, codec, parser), property-test against a trusted oracle (for example, std) and assert broad invariants such as "never panics."
 
+For a rewrite, port, or optimization of code that already works, the old implementation is the oracle. Keep it in the tree, run generated inputs through both, compare results, state, and effects, and delete it only after that differential suite is green. A change with no oracle and no invariant has a weak correctness claim; say so in the report.
+
+Write each property once. A `bolero::check!` harness runs under the built-in random engine in plain `cargo test` (about one second of inputs by default), under libFuzzer, AFL, or honggfuzz, and under Kani (`cargo bolero test --engine kani <target>`), with shrinking and `#[derive(TypeGenerator)]` for input types. One harness per property keeps the property test, the fuzz target, and the Kani harness from drifting into three different properties.
+
 ### 3. Exhaustive verification
 
 - Loom for the distinguishable concurrent executions of lock-free, atomic, or custom sync code. Its memory model is partial (no load buffering, `SeqCst` treated as `AcqRel`), so state that limit with the claim.
-- Kani for symbolic / model-checked inputs around `unsafe`, and on high-risk logic whose named property must hold for every input.
+- Kani for symbolic / model-checked inputs around `unsafe`, and on high-risk logic whose named property must hold for every input. Kani checks sequential code: it warns on concurrent code and compiles it as if it were sequential, so a concurrency claim never rests on Kani. Set `#[kani::unwind(n)]` and report n with the claim; a failed unwinding assertion means the bound did not cover every iteration.
 
 Keep exhaustive tools on the smallest core that must be correct. Loom owns that small concurrent implementation. Kani owns symbolic inputs on that core. System interleavings, deadlock, liveness, and recovery architecture are assigned under Verification architecture.
 
@@ -160,7 +168,7 @@ Keep a simple, stable core. Document semver expectations for callers.
 
 ### 8. Dependencies
 
-1. Track the complete dependency closure across every deployment that matters.
+1. Track the complete dependency closure across every deployment that matters. Build shipped binaries with `cargo auditable build` so each binary carries its own dependency list in a linker section, and scan the binaries (`cargo audit bin`, Trivy, Grype, or osv-scanner), not only the lockfile.
 2. Join against known issues (for example, RUSTSEC).
 3. Vet for unknown issues (`cargo-vet`, public or internal).
 
@@ -188,7 +196,7 @@ More tools are not a stronger architecture. Inspect the crate, assign an owner t
 
 - Read the workspace before naming a tool: `Cargo.toml` and workspace members, `src/`, `crates/`, `tests/`, `benches/`, `fuzz/`, `scripts/`, `.github/workflows/` or other CI and task files (`xtask`, `justfile`, `Makefile`), `AGENTS.md`, `CONTRIBUTING.md`, `docs/`, and any `formal/`, `spec/`, or `proof/` tree.
 - Search for state machines, reducers, events, commands, effects, workers, schedulers, queues, retry, cancel, timeouts, recovery, journals, replay, transactions, persistence, locks, atomics, channels, spawn, `unsafe`, FFI, protocols, parsers, and serialization.
-- Record verifiers already present: proptest, quickcheck, cargo-fuzz, cargo-mutants, Loom, shuttle, turmoil, Miri, sanitizers, Kani, Verus, Creusot, TLA+, TLC, Lean, Rocq (Coq), Alloy, and any written specification or model check.
+- Record verifiers already present: proptest, quickcheck, Bolero, cargo-fuzz, cargo-mutants, Loom, shuttle, turmoil, Stateright, Miri, cargo-careful, sanitizers, Kani, Verus, Creusot, TLA+, TLC, Lean, Aeneas or hax translations, Rocq (Coq), Alloy, and any written specification or model check, plus the gates already enforced: `cargo deny`, `cargo-vet`, `cargo-semver-checks`, `cargo auditable`, `zizmor`.
 - Count a tool as an owner only where it runs, in CI or another enforced gate, against that failure class. Recommend another only when a failure class below has no owner.
 
 ### Risk to owner
@@ -198,15 +206,17 @@ Assign every failure class the crate actually has. This is a decision table, not
 | Failure class | Preferred owner |
 |---------------|-----------------|
 | Deterministic logic | Unit, property, or differential tests |
+| Rewrite, port, or optimization of working code | Differential tests against the retained old implementation or a reference |
 | Untrusted input | Fuzz |
-| Unsafe or provenance | Miri, plus fuzz or Kani; sanitizers for FFI and other code Miri cannot run |
+| Unsafe or provenance | Miri, plus fuzz or Kani; `cargo careful` and sanitizers for FFI and other code Miri cannot run |
 | Small concurrent implementation | Loom |
 | System interleavings, deadlock, liveness, or recovery architecture | TLA+ for the design; `turmoil` or `shuttle` for the Rust that implements it |
 | Crash persistence | Crash and fault tests; add TLA+ when recovery architecture is the risk |
-| Mathematical kernel | Lean, Verus, or Kani when a named property justifies it |
+| Mathematical kernel | Kani for a bounded property; Creusot or Verus for contracts; Lean for a theorem, derived from the Rust with Aeneas when the kernel fits its subset |
 | Several DSLs or frontends | Differential or conformance tests |
 | Public API break | `cargo-semver-checks`, `cargo-public-api` |
-| Vulnerable or unvetted dependency (any crate with dependencies) | `cargo deny` / RUSTSEC, `cargo-vet` |
+| Vulnerable or unvetted dependency (any crate with dependencies) | `cargo deny` / RUSTSEC, `cargo-vet`; `cargo auditable` so shipped binaries can be scanned |
+| Compromised CI workflow (any repo with GitHub Actions) | `zizmor` |
 | Performance regression | Benchmark gate on non-noisy metrics |
 
 Deterministic logic stays on tests. It becomes a mathematical kernel only when a named property must hold for every input and tests cannot close it. Add a formal tool only for a row whose preferred owner is that tool.
@@ -217,16 +227,21 @@ Deterministic logic stays on tests. It becomes a mathematical kernel only when a
 - TLA+ owns that system-level design. A retry or timeout inside one task, or a trivial deterministic function, stays on Rust tests and simulation.
 - When a model exists, document its state variables, actions, invariants, liveness properties, fairness assumptions, bounds, abstractions, and the production Rust each piece maps to.
 - TLC exhaustively enumerates the finite instance its configuration sets; its simulation mode only samples, and Apalache checks to a depth bound. State the bounds. None of these runs is an unrestricted proof; a checked TLAPS proof is.
+- Stateright is the alternative when the actors can be written in Rust: it model-checks them (BFS, DFS, or simulation, with a linearizability tester) and runs the same actor code over UDP, so the model and the implementation cannot drift apart the way a TLA+ spec and its Rust can. Its releases have been sporadic; check maintenance before it owns a failure class.
 
-### Lean and other provers
+### Provers and contract verifiers
 
-- Add Lean, or a similar prover, only for a small kernel where a theorem is the point: replay algebra, effect identity or uniqueness, normalization, monotonicity, ordering, ranking, a scheduler algorithm, capability or policy composition, or another deterministic transformation that tests do not close.
+Route by the claim:
+
+- A property over every input, checked to a bound: Kani (section 3).
+- Contracts on the Rust itself (pre- and postconditions, loop invariants, panic and overflow freedom): Creusot annotates Rust with `#[requires]`, `#[ensures]`, `#[invariant]`, and Pearlite specs and discharges them through Why3; its concurrency support is new and limited to sequentially consistent atomics. Verus writes spec and proof code beside exec Rust inside `verus!`, checks it with Z3, and needs the Verus toolchain to verify and to compile; it reasons about raw pointers through permission tokens (`PPtr`, `PointsTo`) and about concurrency through tokenized state machines.
+- A theorem: Lean, or a similar prover, only for a small kernel where the theorem is the point: replay algebra, effect identity or uniqueness, normalization, monotonicity, ordering, ranking, a scheduler algorithm, capability or policy composition, or another deterministic transformation that tests do not close.
 - Every artifact answers one question: what theorem does this establish that Rust tests do not? A weak answer means the prover is not justified.
-- Skip a Lean enum or step function whose only job is to mirror a Rust enum or reducer.
+- Derive the Lean definitions from the Rust when the kernel fits. Aeneas translates Rust through Charon and LLBC into Lean (also HOL4, F*, and Rocq) for a subset of safe Rust with no `unsafe` and no concurrency, so drift shrinks to the translation. hax does the same for crypto and protocol code (F* is its stable backend; its Lean backend runs Charon and Aeneas). A hand-written Lean model of code outside that subset needs the conformance link below. Skip a Lean enum or step function whose only job is to mirror a Rust enum or reducer.
 
 ### Semantic duplication
 
-- Flag a Rust reducer, a TLA+ transition relation, a Lean step function, and a fixture interpreter that encode the same steps. Four green suites can still be four different semantics.
+- Flag a Rust reducer, a TLA+ transition relation, a Lean step function, and a fixture interpreter that encode the same steps, and a property test, fuzz target, and Kani harness that each restate one property. Four green suites can still be four different semantics.
 - Classify each extra model as a necessary abstraction, a formal specification, a useful differential implementation, accidental duplication, or verification theater.
 - A necessary abstraction drops detail so a different failure class can be checked, and a conformance link says what was dropped. Theater is a green run with no owner, no stated bounds, and no link to production Rust.
 
@@ -314,14 +329,15 @@ Adapt to the crate. Minimum credible set:
 3. At least one of: proptest/quickcheck, mutants, or fuzz on parsers / codecs
 4. Loom and/or Kani gated to the modules that need them
 5. Benchmark regression gate with non-noisy metrics
-6. `cargo deny` / RUSTSEC audit + optional `cargo-vet`
+6. `cargo deny` / RUSTSEC audit + optional `cargo-vet`, and `cargo auditable` on release builds
 7. `cargo-semver-checks` on published API crates
+8. `zizmor` on `.github/workflows` when the repo uses GitHub Actions (template injection, excessive permissions, unpinned actions, persisted credentials)
 
 Item 1 runs on every crate. Skip any other tool the risk table does not justify, and split the rest by cost:
 
-- Pull request: `cargo fmt --check`, `cargo check`, Clippy, unit and integration tests, property tests that cover the diff, Miri on tests that touch `unsafe`, `cargo deny`, `cargo-semver-checks` on published crates, and the benchmark gate, plus small Loom or Kani runs, small model checks, and conformance tests when those owners exist.
+- Pull request: `cargo fmt --check`, `cargo check`, Clippy, unit and integration tests with a flaky result failing the run, property tests that cover the diff, Miri on tests that touch `unsafe`, `cargo deny`, `cargo-semver-checks` on published crates, `zizmor` when the diff touches a workflow, and the benchmark gate, plus small Loom or Kani runs, small model checks, and conformance tests when those owners exist.
 - Nightly: larger fuzz campaigns, broader Miri, large TLC state spaces, fault injection, stress tests, large Loom scenarios, and deterministic simulation.
-- Release: the full matrix when a failure class in the risk table justifies the cost.
+- Release: the full matrix when a failure class in the risk table justifies the cost, and shipped binaries built with `cargo auditable`.
 
 ## Review report
 
@@ -332,6 +348,21 @@ When finishing work under this skill, report:
 - Deferred: what was skipped and why (follow-up if high stakes)
 - Compat / deps: any new public surface or dependency hazard
 - Verification: the Verification impact declaration, the owner of each failure mode this change can break, and any conformance or model update
+
+Give each check its own evidence record, so a reader can separate what was checked from what was assumed:
+
+```text
+Claim (Terminology term):
+Failure class and code boundary:
+Verifier and command:
+Property or invariant:
+Inputs, state space, and bounds:
+Assumptions:
+Result, artifacts, and on failure the counterexample or minimal reproducer:
+Blind spots:
+```
+
+Record only checks that ran. A clean compile is not a check of behavior.
 
 ## Anti-patterns
 
@@ -345,3 +376,5 @@ When finishing work under this skill, report:
 - A second copy of the same state machine in TLA+, Lean, or test fixtures with no conformance link to production Rust
 - Calling a bounded model check, a fuzz campaign, or a green unit suite a proof
 - Adding a prover or a system model to mirror logic that unit and property tests already own
+- Deleting the old implementation before the rewrite has run differentially against it
+- Rerunning a failed test until it passes and reporting green
