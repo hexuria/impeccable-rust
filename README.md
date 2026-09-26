@@ -7,9 +7,10 @@ Agent skill for writing and reviewing Rust the way Jon Gjengset describes in
 critical software fails. There is no single trick — layered testing, misuse-resistant
 APIs, trustworthy benchmarks, documented decisions, and deliberate dependency hygiene.
 
-The checklist follows the talk. The data-layout notes, everyday API idioms, and
-the verification architecture (TLA+, Lean, conformance, anti-drift) go beyond it
-and are not claims from the talk.
+The checklist follows the talk. The data-layout notes, everyday API idioms, the
+verification architecture (TLA+, Lean, Aeneas, conformance, anti-drift), the
+differential-oracle rule, the evidence record, and the supply-chain and CI gates
+(cargo-auditable, zizmor) go beyond it and are not claims from the talk.
 
 ## Install
 
