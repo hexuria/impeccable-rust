@@ -49,10 +49,10 @@ architecture.
 - Assert invariants. Panics on broken assumptions beat silent wrongness.
 - It works is not the same as it is not broken.
 - Run Miri on tests that touch `unsafe`, custom allocators, or subtle provenance (`cargo +nightly miri test`).
-- Use sanitizers (nightly `-Zsanitizer=address` or `thread`) when threading, memory access, or FFI matters beyond what Miri can run.
+- Use sanitizers when threading, memory access, or FFI matters beyond what Miri can run. They are nightly compiler instrumentation (`-Zsanitizer`), not crates, and they report only what a run executes: `address` finds out-of-bounds access, use-after-free, and leaks; `thread` finds data races in the schedules that ran, while Loom searches the interleavings; `memory` finds reads of uninitialized memory.
 - Run `cargo +nightly careful test` on the same tests as a fast second pass. It rebuilds std with debug assertions and extra UB checks, runs the FFI and syscalls Miri cannot, and adds a sanitizer with `-Zcareful-sanitizer`. It misses much of the UB Miri detects, so it runs beside Miri, not instead of it.
 - A test that passes only on retry has failed. Run `cargo nextest` with `flaky-result = "fail"` in `.config/nextest.toml` (or `--flaky-result fail`) so a FLAKY result fails the run, reproduce with `--stress-count`, and find the interleaving with Loom or `shuttle` instead of loosening the test.
-- Coverage (`cargo llvm-cov`, or `cargo llvm-cov nextest`; `--branch` needs nightly) shows what no test executes. It is a gap finder, not a claim. A covered line whose mutant `cargo mutants` reports as missed was executed and never checked; `--in-diff` scopes mutants to the change.
+- Coverage (`cargo llvm-cov`, or `cargo llvm-cov nextest`; `--branch` needs nightly) shows what no test executes. It is a gap finder, not a claim. A covered line whose mutant `cargo mutants` reports as missed was executed and never checked, unless the mutant is equivalent: `<` to `<=` at a boundary where both branches return the same value cannot fail any test. Record a confirmed equivalent mutant in `exclude_re` in `.cargo/mutants.toml`, with a comment saying why. `--in-diff` scopes mutants to the change.
 - Test error paths, not only the happy path.
 - Error litmus test: temporarily replace `return Err(...)` with `continue` inside a loop (or otherwise skip the error return). If the suite still passes, error-path coverage is broken. Tests must trigger and verify the exact `Err`.
 
@@ -71,12 +71,12 @@ For reimplementations (custom map, codec, parser), property-test against a trust
 
 For a rewrite, port, or optimization of code that already works, the old implementation is the oracle. Keep it in the tree, run generated inputs through both, compare results, state, and effects, and delete it only after that differential suite is green. A change with no oracle and no invariant has a weak correctness claim; say so in the report.
 
-Write each property once. A `bolero::check!` harness runs under the built-in random engine in plain `cargo test` (about one second of inputs by default), under libFuzzer, AFL, or honggfuzz, and under Kani (`cargo bolero test --engine kani <target>`), with shrinking and `#[derive(TypeGenerator)]` for input types. One harness per property keeps the property test, the fuzz target, and the Kani harness from drifting into three different properties.
+Write each property once. A `bolero::check!` harness runs under the built-in random engine in plain `cargo test` (about one second of inputs by default), under libFuzzer, AFL, or honggfuzz, and under Kani (`cargo bolero test --engine kani <target>`), with shrinking and `#[derive(TypeGenerator)]` for input types. One harness per property keeps the property test, the fuzz target, and the Kani harness from drifting into three different properties. The random engine in `cargo test` is a short sample that misses narrow cases such as a single magic value, so run the harness under libFuzzer or Kani before claiming the property.
 
 ### 3. Exhaustive verification
 
 - Loom for the distinguishable concurrent executions of lock-free, atomic, or custom sync code. Its memory model is partial (no load buffering, `SeqCst` treated as `AcqRel`), so state that limit with the claim.
-- Kani for symbolic / model-checked inputs around `unsafe`, and on high-risk logic whose named property must hold for every input. Kani checks sequential code: it warns on concurrent code and compiles it as if it were sequential, so a concurrency claim never rests on Kani. Set `#[kani::unwind(n)]` and report n with the claim; a failed unwinding assertion means the bound did not cover every iteration.
+- Kani for symbolic / model-checked inputs around `unsafe`, and on high-risk logic whose named property must hold for every input. Kani does not verify concurrency: its book says it compiles concurrent code as if it were sequential, and a `thread::spawn` harness can crash it outright, so a concurrency claim never rests on Kani. Set `#[kani::unwind(n)]` and report n with the claim; a failed unwinding assertion means the bound did not cover every iteration.
 
 Keep exhaustive tools on the smallest core that must be correct. Loom owns that small concurrent implementation. Kani owns symbolic inputs on that core. System interleavings, deadlock, liveness, and recovery architecture are assigned under Verification architecture.
 
@@ -93,6 +93,7 @@ Trustworthy measurements (CI should fail on regression):
 
 - Prefer instruction-count / callgrind-style metrics over wall time alone (for example, `gungraun`, formerly `iai-callgrind`).
 - Interleave old and new (for example, `tango-bench`) to cut noise.
+- Turn the gate on explicitly. gungraun checks regressions only when limits are set (`--callgrind-limits='ir=5%'` exits 3 on a regression); without limits a doubled instruction count still passes. tango's `compare` fails the run on a significant regression only with `--fail-fast`.
 - Use a dedicated host and leave headroom (under 100% load).
 
 Measure what matters, not only speed:
@@ -125,7 +126,7 @@ Decisions:
 
 What is not there:
 
-- Missing corner-case handling. Tell callers what the code cannot do. A silent `todo!()` is a landmine.
+- Missing corner-case handling. Tell callers what the code cannot do. A silent `todo!()` or `unimplemented!()` is a landmine; Clippy's `todo` and `unimplemented` restriction lints find them.
 - Known future optimizations
 - Deliberate absence of impls (for example, no `From` for a reason)
 
@@ -168,10 +169,10 @@ Public surface area is a liability. Prefer:
 - No leaking public dependencies in args, returns, trait impls, or re-exports
 - Non-pub inherent methods over blanket `impl From` / always-public trait impls when the coupling is accidental
 
-Automate:
+Automate, and state what each run cannot see:
 
-- `cargo-semver-checks`
-- `cargo-public-api`
+- `cargo-semver-checks` gates the breaks it has lints for. A clean run is not proof of compatibility: version 0.50 passes a changed parameter or return type.
+- `cargo public-api diff` shows changed public items and signatures, including breaks semver-checks misses. Review it before each release.
 
 Keep a simple, stable core. Document semver expectations for callers.
 
@@ -179,13 +180,13 @@ Keep a simple, stable core. Document semver expectations for callers.
 
 1. Track the complete dependency closure across every deployment that matters. Build shipped binaries with `cargo auditable build` so each binary carries its own dependency list in a linker section, and scan the binaries (`cargo audit bin`, Trivy, Grype, or osv-scanner), not only the lockfile.
 2. Join against known issues (for example, RUSTSEC).
-3. Vet for unknown issues (`cargo-vet`, public or internal).
+3. Vet for unknown issues (`cargo-vet`, public or internal). `cargo vet init` exempts every current dependency, so a new setup vets nothing until imported and local audits shrink the exemptions; until then it gates only new dependencies.
 
 Be able to answer operational questions such as which deployed units still run a vulnerable transitive crate.
 
 ### 9. Stagnation as a choice
 
-Loud reminders when you are behind or dependencies are dead (Dependabot / Renovate). Reduce friction:
+Loud reminders when you are behind (Dependabot, Renovate) or a dependency is dead (RUSTSEC unmaintained advisories through `cargo deny`, or Renovate's `abandonmentThreshold`; Dependabot does not flag abandonment). Reduce friction:
 
 - Auto-merge dependency bump PRs that pass tests
 - Budgeted maintenance time
@@ -340,7 +341,7 @@ Adapt to the crate. Minimum credible set:
 5. Benchmark regression gate with non-noisy metrics
 6. `cargo deny` / RUSTSEC audit + optional `cargo-vet`, and `cargo auditable` on release builds
 7. `cargo-semver-checks` on published API crates
-8. `zizmor` on `.github/workflows` when the repo uses GitHub Actions (template injection, excessive permissions, unpinned actions, persisted credentials)
+8. `zizmor` on `.github/workflows` when the repo uses GitHub Actions (template injection, excessive permissions, unpinned actions, persisted credentials); its default persona hides lower-confidence findings, so an audit runs `zizmor --persona=auditor`
 
 Item 1 runs on every crate. Skip any other tool the risk table does not justify, and split the rest by cost:
 
