@@ -13,6 +13,12 @@ under which bounds, and what was left out.
 - **Checklist for every change.** Error-path tests, chaos and property tests,
   Miri and sanitizers on `unsafe`, Loom and Kani where they apply, trustworthy
   benchmarks, misuse-resistant APIs, semver hygiene, and dependency vetting.
+- **Tools it knows.** Everything the talk names: Miri, sanitizers, turmoil,
+  shuttle, quickcheck, proptest, cargo-mutants, Loom, Kani, gungraun (formerly
+  iai-callgrind), tango-bench, Clippy, cargo-semver-checks, cargo-public-api,
+  RUSTSEC, and cargo-vet. Added beyond it: Bolero, cargo-careful, nextest,
+  cargo-llvm-cov, cargo-fuzz, cargo-deny, cargo-auditable, zizmor, TLA+,
+  Stateright, Creusot, Verus, Lean, Aeneas, and hax.
 - **Risk-to-owner routing.** Each failure class gets one owner: fuzzing for
   untrusted input, Miri and cargo-careful for `unsafe`, Loom for lock-free code,
   TLA+ or Stateright for multi-actor designs, Creusot, Verus, or Lean for proof
