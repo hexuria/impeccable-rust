@@ -3,11 +3,11 @@ name: impeccable-rust
 description: >-
   Use when writing, reviewing, hardening, or designing Rust for high-stakes or
   long-lived crates, when rewriting or optimizing an implementation that
-  already works, or when auditing how a crate is verified (Miri, Loom, Kani,
-  TLA+, Lean). Checklist for exhaustive testing, trustworthy benchmarks, data
-  layout, misuse-resistant APIs and everyday API idioms, decision records,
-  semver hygiene, deliberate dependency maintenance, and risk-driven formal
-  verification with anti-drift rules.
+  already works, or when auditing or setting up how a crate is verified (Miri,
+  Loom, Kani, TLA+, Lean). Checklist for exhaustive testing, trustworthy
+  benchmarks, data layout, misuse-resistant APIs and everyday API idioms,
+  decision records, semver hygiene, deliberate dependency maintenance, and
+  risk-driven formal verification with anti-drift rules.
 ---
 
 # Impeccable Rust
@@ -26,6 +26,15 @@ hurts.
 5. Stagnation is a choice with rising cost. Surface it; do not silently defer forever.
 6. Apply expensive verification where failure actually hurts.
 7. Give every important failure mode an owner. Link any second model to production Rust before treating its results as evidence about the Rust.
+
+## Tooling
+
+`scripts/impeccable`, in this skill's folder, sets up and runs the command-line tools this skill names. Its toolbox is a Linux Docker image with each tool pinned, and it installs nothing on the host. Library crates such as proptest, Loom, and Bolero come in through Cargo as usual. The provers (Lean, Verus, Creusot, Aeneas, hax) are not in the toolbox.
+
+- Run `scripts/impeccable doctor` before choosing checks. It reports which tools run on this host, which run only in the toolbox, and which are missing or older than the pinned version.
+- Run a tool the host lacks, or one that needs Linux, in the toolbox: `scripts/impeccable run cargo kani`. The first run builds the image. On macOS the toolbox is the only place gungraun, MemorySanitizer, and standalone LeakSanitizer run.
+- Run a sanitizer with `scripts/impeccable sanitize <address|thread|memory|leak> [cargo test args]`. It adds `--target`, adds `-Zbuild-std` for thread and memory, and moves to the toolbox when the host cannot run that sanitizer.
+- Install tools on the host with `scripts/impeccable setup host` only when the user asks for it.
 
 ## Checklist (run what applies)
 
