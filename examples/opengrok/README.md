@@ -3,8 +3,9 @@
 This example runs impeccable-rust inside a three-agent loop:
 
 - **OpenGrok** orchestrates. It is a chat bot you reach from your phone, with
-  webhook routines and GitHub routines. Grok Bot has the same features, so
-  everything here works with either one.
+  webhook routines and GitHub routines. It is not Oracle's code-search engine
+  of the same name. Grok Bot has the same features, so everything here works
+  with either one.
 - **Claude Code** writes the change with impeccable-rust.
 - **A Cursor cloud agent** reviews the pull request against the same skill.
 
@@ -32,8 +33,10 @@ Claude Code --opens PR--> acme/parser --GitHub routine--> Cursor cloud agent
   clean and stops two sessions from talking over each other. Each ping starts a
   routine run, which counts against your OpenGrok usage.
 - **Inbound.** OpenGrok answers by appending a line to
-  `~/.grokbot/inbox/parser.jsonl`, and a watcher prints new lines to Claude.
-  Claude never waits on a chat prompt, and nothing types into your terminal.
+  `~/.grokbot/inbox/parser.jsonl`. Claude keeps a watcher running that waits
+  for the next new line, prints it, and exits. The exit is what wakes Claude,
+  so a reply reaches it as soon as the line lands, and Claude never waits on a
+  chat prompt. Nothing types into your terminal.
 - **Review.** A GitHub routine on `acme/parser` fires when a pull request is
   opened or a review is requested. It starts a Cursor cloud agent, and OpenGrok
   sends you the result.
@@ -51,11 +54,12 @@ Claude Code --opens PR--> acme/parser --GitHub routine--> Cursor cloud agent
 
   > Merge a PR only when CI is green, the Cursor review has no open findings,
   > and the report's Deferred list is empty or User approved it. Bring
-  > everything else to User.
+  > everything else to User, including logins, product calls, and anything
+  > irreversible.
 
 ## Setup
 
-Install `jq` and `curl` first.
+Install `jq` and `curl` 7.76 or newer first.
 
 ### 1. Install the skill
 
@@ -83,21 +87,29 @@ instruction:
 This webhook serves only the Claude session "parser" on acme/parser.
 Send User a short, phone-friendly summary of every ping.
 Merge a PR only when CI is green, the Cursor review has no open findings,
-and the report's Deferred list is empty or User approved it.
-Bring everything else to User, including logins, product calls, and
-anything irreversible.
-Answer by appending one line to ~/.grokbot/inbox/parser.jsonl, as the
-example's inbox format shows. Start each answer with the question it answers.
+and the report's Deferred list is empty or User approved it. Bring
+everything else to User, including logins, product calls, and anything
+irreversible.
+Answer by running this command on User's laptop with your answer in place
+of the message. Start the answer with the question it answers. Never put a
+line that reads GROKBOT_END inside it.
+
+jq -cn --arg session parser --arg from grokbot --arg ts "$(date -u +%FT%TZ)" \
+  --rawfile message /dev/stdin \
+  '{session:$session, from:$from, ts:$ts, message:($message | rtrimstr("\n"))}' \
+  >> ~/.grokbot/inbox/parser.jsonl <<'GROKBOT_END'
+re PR #12 merge: approved
+GROKBOT_END
 ```
 
 Then create a GitHub routine on `acme/parser` that fires when a pull request is
 opened or a review is requested, skips drafts, and starts a Cursor cloud agent
 to review the PR with impeccable-rust.
 
-OpenGrok has to write a file on your laptop, so it needs permission to run
-commands there. Either it asks you before each reply, which stalls while you
-are away, or it has standing permission to run commands on your laptop. Choose
-one knowingly.
+OpenGrok has to run that command on your laptop, so turn on its local
+execution. Then decide: either it asks you before each command, which stalls
+while you are away, or it has standing permission to run commands on your
+laptop. Choose one knowingly.
 
 ### 3. Store the webhook credentials
 
@@ -106,10 +118,10 @@ private file. Never commit it.
 
 ```sh
 mkdir -p ~/.grokbot/inbox && chmod 700 ~/.grokbot ~/.grokbot/inbox
-cat > ~/.grokbot/parser.env <<'EOF'
+cat > ~/.grokbot/parser.env <<'GROKBOT_END'
 WEBHOOK_URL='https://...'
 WEBHOOK_HEADER='Authorization: Bearer ...'
-EOF
+GROKBOT_END
 chmod 600 ~/.grokbot/parser.env
 ```
 
@@ -118,41 +130,62 @@ chmod 600 ~/.grokbot/parser.env
 Save these as `~/.grokbot/ping` and `~/.grokbot/watch`, then run
 `chmod +x ~/.grokbot/ping ~/.grokbot/watch`.
 
-`ping` reads the message from stdin, so Claude can pass it through a quoted
-heredoc and the shell never expands anything inside it:
+`ping` reads the message from stdin. Claude passes it through a quoted heredoc,
+so the shell expands nothing inside it. A line equal to the terminator ends
+the heredoc, which is why the terminator is `GROKBOT_END` and not `EOF`. The
+script refuses an empty message or an unknown `need`, so a mistyped call never
+starts a routine run:
 
 ```sh
 #!/bin/sh
-# Usage: ping <session> <need> <<'EOF' ... EOF
+# Usage: ping <session> <need> <<'GROKBOT_END' ... GROKBOT_END
 set -eu
 session=$1 need=$2
+case $need in
+  decision|merge|pr_ready|recap|update|blocker) ;;
+  *) echo "ping: unknown need '$need'" >&2; exit 2 ;;
+esac
 . "$HOME/.grokbot/$session.env"
 message=$(cat)
+[ -n "$message" ] || { echo 'ping: empty message' >&2; exit 2; }
 curl -sS --fail-with-body "$WEBHOOK_URL" \
   -H "$WEBHOOK_HEADER" \
   -H 'Content-Type: application/json' \
-  -d "$(jq -n --arg session "$session" --arg need "$need" --arg message "$message" \
+  -d "$(jq -cn --arg session "$session" --arg need "$need" --arg message "$message" \
       '{session:$session, need:$need, message:$message}')"
 ```
 
-`watch` prints every inbox line it has not printed before and remembers its
-place in `<session>.seen`. It refuses to start while another copy is running,
-and starts over if the inbox was replaced by a shorter file:
+`watch` waits for the next inbox lines it has not printed before, prints
+them, and exits. It remembers its place in `<session>.seen` and, when it
+starts, resets if the inbox was replaced by a shorter file. A lock keeps two
+copies from running, and a lock left behind by a crash is cleared on the next
+start. After 25 minutes with nothing new it exits with no output, so run it
+again whenever it exits:
 
 ```sh
 #!/bin/sh
 # Usage: watch <session>
 set -u
 d="$HOME/.grokbot/inbox"; f="$d/$1.jsonl"; s="$d/$1.seen"; lock="$d/$1.lock"
+limit=${WATCH_LIMIT:-1500}
 if ! mkdir "$lock" 2>/dev/null; then
-  echo "a watcher for $1 is already running (delete $lock if it is not)"; exit 1
+  if kill -0 "$(cat "$lock/pid" 2>/dev/null)" 2>/dev/null; then
+    echo "a watcher for $1 is already running"; exit 1
+  fi
+  rm -rf "$lock"; mkdir "$lock" || exit 1
 fi
-trap 'rmdir "$lock" 2>/dev/null' EXIT
+echo $$ > "$lock/pid"
+trap 'rm -rf "$lock"' EXIT
 trap 'exit 1' INT TERM HUP
 touch "$f"
-n=$(cat "$s" 2>/dev/null); case $n in ''|*[!0-9]*) n=0 ;; esac
+n=$(cat "$s" 2>/dev/null); case $n in ''|*[!0-9]*|0[0-9]*) n=0 ;; esac
 [ "$n" -gt "$(($(wc -l < "$f")))" ] && n=0
-tail -n +$((n+1)) -F "$f" 2>/dev/null | while IFS= read -r line; do
+waited=0
+while [ "$(($(wc -l < "$f")))" -le "$n" ]; do
+  [ "$waited" -ge "$limit" ] && exit 0
+  sleep 5; waited=$((waited+5))
+done
+tail -n +$((n+1)) "$f" | while IFS= read -r line; do
   n=$((n+1))
   [ -n "$line" ] && printf 'grokbot inbox #%s: %s\n' "$n" "$line"
   echo "$n" > "$s.tmp" && mv "$s.tmp" "$s"
@@ -162,16 +195,27 @@ done
 ### 5. Let Claude run them without asking
 
 In Claude Code's default mode, every ping asks you for permission, and a
-session left alone blocks on that prompt. Allow the two scripts in the
-project's `.claude/settings.json`:
+session left alone blocks on that prompt. Allow the two scripts in
+`.claude/settings.local.json` in your clone of `acme/parser`, which is
+personal and not committed. A rule matches the command text as typed, so list
+the `~` form and the absolute form of each path, with `<home>` replaced by
+your home directory:
 
 ```json
 {
   "permissions": {
-    "allow": ["Bash(~/.grokbot/ping:*)", "Bash(~/.grokbot/watch:*)"]
+    "allow": [
+      "Bash(~/.grokbot/ping:*)",
+      "Bash(<home>/.grokbot/ping:*)",
+      "Bash(~/.grokbot/watch:*)",
+      "Bash(<home>/.grokbot/watch:*)"
+    ]
   }
 }
 ```
+
+A rule never matches a compound command, so the watcher is started with the
+Bash tool's background option, not with `&`.
 
 ### 6. Start the session and test the loop
 
@@ -184,21 +228,23 @@ OpenGrok's answer shows up as a `grokbot inbox` line.
 ```text
 Standing rule for this session. The session is "parser".
 
-1. Start ~/.grokbot/watch parser in the background and keep it running. If it
-   stops, start it again; it refuses to run twice. Each "grokbot inbox" line
-   it prints is a reply from OpenGrok.
+1. Run ~/.grokbot/watch parser as a background command, without "&". It
+   waits for the next reply from OpenGrok, prints it as "grokbot inbox"
+   lines, and exits. Whenever it exits, read what it printed and run it
+   again, including when it printed nothing. It refuses to run twice.
 2. Instead of waiting in this chat, ping OpenGrok on every decision needed,
    PR opened or ready, CI result that changes the plan, meaningful update,
    blocker, and recap before you idle on background work:
 
-   ~/.grokbot/ping parser <need> <<'EOF'
+   ~/.grokbot/ping parser <need> <<'GROKBOT_END'
    <message>
-   EOF
+   GROKBOT_END
 
    need is one of: decision | merge | pr_ready | recap | update | blocker.
    The message says what happened, why it matters, the exact reply phrases,
    your recommendation, the default if nobody replies, PR URLs, and CI status.
-   If the ping command fails, say so in this chat; the ping did not arrive.
+   Never put a line that reads GROKBOT_END inside the message. If the ping
+   command fails, say so in this chat; the ping did not arrive.
 3. Keep working on anything that does not need the answer.
 4. Act only on inbox lines with "from":"grokbot" and "session":"parser".
 5. Use impeccable-rust for every Rust change, and put its report in the PR body.
@@ -223,20 +269,15 @@ usual reason for a `recap`.
 
 ## Inbox format
 
-OpenGrok appends one JSON object per line. The inbox is append-only: never
-truncate, rotate, or rewrite it. The message goes in through a quoted heredoc,
-so nothing in a chat reply can run on your laptop:
+The routine's command from step 2 appends one JSON object per line:
 
-```sh
-jq -cn --arg session parser --arg from grokbot --arg ts "$(date -u +%FT%TZ)" \
-  --rawfile message /dev/stdin \
-  '{session:$session, from:$from, ts:$ts, message:($message | rtrimstr("\n"))}' \
-  >> ~/.grokbot/inbox/parser.jsonl <<'EOF'
-re PR #12 merge: approved
-EOF
+```json
+{"session":"parser","from":"grokbot","ts":"2026-09-27T09:41:00Z","message":"re PR #12 merge: approved"}
 ```
 
-The `from` and `session` fields keep stray lines out, but they are not a
-security boundary. Any process running as you can write to the inbox, so the
-real boundary is the `chmod 700` on `~/.grokbot`. Keep secrets out of inbox
+The inbox is append-only: never truncate, rotate, or rewrite it. The message
+goes in through a quoted heredoc, so the shell expands nothing inside it. The
+`from` and `session` fields keep stray lines out, but they are not a security
+boundary. Any process running as you can write to the inbox, so the real
+boundary is the `chmod 700` on `~/.grokbot`. Keep secrets out of inbox
 messages.
