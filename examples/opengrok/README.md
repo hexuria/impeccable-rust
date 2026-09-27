@@ -5,19 +5,18 @@ Bot, which has the same features) orchestrates, Claude Code writes the change,
 and a Cursor cloud agent reviews the pull request. You follow along from your
 phone and step in only for decisions.
 
-The full playbook, with every prompt and routine, is in
-[this gist](https://gist.github.com/hexuria/b0138864d7cd36024682a9c997d7997b).
-This page covers the setup and the part impeccable-rust plays.
+The examples use a session named `parser` working on the repo `acme/parser`.
+Swap in your own names.
 
 ## The loop
 
 ```
 ┌─────────────────────┐     POST webhook      ┌──────────────────────┐
 │ Claude Code         │ ───────────────────▶  │ OpenGrok routine     │
-│ writes the change   │                       │ Claude · <session>   │
+│ writes the change   │                       │ Claude · parser      │
 └─────────┬───────────┘                       └──────────┬───────────┘
           │                                              │
-          │  tail -F ~/.grokbot/inbox/<session>.jsonl    │ acts, merges,
+          │  tail -F ~/.grokbot/inbox/parser.jsonl       │ acts, merges,
           │◀─────────────────────────────────────────────┤ or asks User
           │  appends one JSON line (reply)               │
 ┌─────────┴───────────┐                       ┌──────────▼───────────┐
@@ -32,7 +31,7 @@ This page covers the setup and the part impeccable-rust plays.
   One webhook per session keeps each routine's history clean and stops two
   sessions from talking over each other.
 - **Inbound.** OpenGrok replies by appending a line to
-  `~/.grokbot/inbox/<session>.jsonl`. Claude watches that file. Nothing
+  `~/.grokbot/inbox/parser.jsonl`. Claude watches that file. Nothing
   automates keystrokes, so nothing steals focus from your terminal.
 - **Review.** A GitHub routine fires on `pr-opened` and `review-requested`,
   launches a Cursor cloud agent to review the PR, and summarizes the result for
@@ -44,7 +43,7 @@ Install the skill for both agents that touch code:
 
 ```sh
 cp -r impeccable-rust/skill ~/.claude/skills/impeccable-rust          # Claude Code
-cp -r impeccable-rust/skill <repo>/.cursor/skills/impeccable-rust     # Cursor review
+cp -r impeccable-rust/skill parser/.cursor/skills/impeccable-rust  # Cursor review
 ```
 
 - **Claude Code** follows the checklist while it writes, runs the verifiers,
@@ -61,7 +60,7 @@ cp -r impeccable-rust/skill <repo>/.cursor/skills/impeccable-rust     # Cursor r
 
 For each Claude session:
 
-1. Create an OpenGrok webhook routine named `Claude · <session>`. Its prompt
+1. Create an OpenGrok webhook routine named `Claude · parser`. Its prompt
    says the webhook serves only that session, pings you briefly, may merge
    green PRs and answer through the inbox while you are away, and escalates
    logins, product calls, and irreversible actions.
@@ -71,19 +70,19 @@ For each Claude session:
 
    ```sh
    mkdir -p ~/.grokbot/inbox && chmod 700 ~/.grokbot ~/.grokbot/inbox
-   touch ~/.grokbot/inbox/<session>.jsonl
+   touch ~/.grokbot/inbox/parser.jsonl
    ```
 
 4. Paste the standing prompt below into the Claude session.
 5. Send a self-test webhook with `need=update` and check that the reply shows
    up in the inbox.
-6. Optional: add the Cursor review routine for the repo.
+6. Optional: add the Cursor review routine on `acme/parser`.
 
 ## Standing prompt
 
 ```text
-Standing rule for this session. SESSION=<session>
-WEBHOOK_URL=<OpenGrok Routines · Claude · <session> · Webhook URL>
+Standing rule for this session. SESSION=parser
+WEBHOOK_URL=<OpenGrok Routines · Claude · parser · Webhook URL>
 WEBHOOK_AUTH=<OpenGrok Routines · Authorization header>
 
 1. Outbound: POST the webhook instead of waiting in this chat. Fire on every
@@ -126,15 +125,15 @@ usual reason for a `recap`.
 OpenGrok appends one JSON object per line and never truncates the file:
 
 ```sh
-jq -cn --arg session "<session>" --arg from "grokbot" --arg message "approve option A" \
-  '{session:$session, from:$from, message:$message}' >> ~/.grokbot/inbox/<session>.jsonl
+jq -cn --arg session "parser" --arg from "grokbot" --arg message "approve option A" \
+  '{session:$session, from:$from, message:$message}' >> ~/.grokbot/inbox/parser.jsonl
 ```
 
 Claude watches it from where it last stopped:
 
 ```sh
-f="$HOME/.grokbot/inbox/<session>.jsonl"
-s="$HOME/.grokbot/inbox/<session>.seen"
+f="$HOME/.grokbot/inbox/parser.jsonl"
+s="$HOME/.grokbot/inbox/parser.seen"
 n=$(cat "$s" 2>/dev/null || echo 0)
 tail -n +$((n+1)) -F "$f" 2>/dev/null | while IFS= read -r line; do
   n=$((n+1)); echo "$n" > "$s"
