@@ -110,6 +110,12 @@ Compat/deps:  no new public surface; cargo deny clean
 Verification: unsafe / memory behavior; owner of each affected failure mode
 ```
 
+## Examples
+
+- [`examples/opengrok`](examples/opengrok/README.md): OpenGrok or Grok Bot
+  orchestrates, Claude Code writes with the skill, and a Cursor cloud agent
+  reviews the PR against it.
+
 ## License
 
 MIT
