@@ -7,10 +7,14 @@
 #                                        install the pinned tools on this host
 #   impeccable run [command...]          run a command in the toolbox, on the current project
 #   impeccable sanitize <kind> [args...] cargo test under a sanitizer: address, thread, memory, leak
+#   impeccable bench-guard <baseline> [--allow <check>=<reason>]... [--benches <pathspec>]... [-- command...]
+#                                        check the benchmark contract against a baseline commit,
+#                                        then run the command under a machine-wide benchmark lock
 #
 # Environment:
 #   IMPECCABLE_UNCONFINED=1  run the toolbox without seccomp so gungraun can turn off ASLR
 #   IMPECCABLE_MOUNT=<dir>   mount this directory instead of the detected workspace root
+#   IMPECCABLE_BENCH_LOCK=<dir>  benchmark lock path (default /tmp/impeccable-bench-<uid>.lock)
 set -euo pipefail
 
 resolve_self_dir() {
@@ -346,6 +350,192 @@ cmd_sanitize() {
   exec cargo +nightly test ${build_std[@]+"${build_std[@]}"} --target "$triple" "$@"
 }
 
+# Prints the [profile.*] tables of a Cargo manifest read from stdin.
+profile_tables() {
+  awk '/^[[:space:]]*\[/ { p = ($0 ~ /^[[:space:]]*\[profile\./) } p'
+}
+
+# Prints "name version" for every package in a Cargo.lock read from stdin.
+lock_packages() {
+  awk '/^name = / { n = $3 } /^version = / { v = $3; gsub(/"/, "", n); gsub(/"/, "", v); print n " " v }' | sort -u
+}
+
+# Prints "count path" for Rust lines containing the word `unsafe` that the diff on stdin adds.
+added_unsafe() {
+  awk '/^\+\+\+ / { f = substr($0, 7); next }
+    /^\+/ { l = " " substr($0, 2) " "; if (l ~ /[^A-Za-z0-9_]unsafe[^A-Za-z0-9_]/) c[f]++ }
+    END { for (f in c) print c[f] " " f }'
+}
+
+bench_lock_path() {
+  local dir=/tmp
+  if [ -n "${IMPECCABLE_BENCH_LOCK:-}" ]; then echo "$IMPECCABLE_BENCH_LOCK"; return 0; fi
+  if [ ! -w "$dir" ]; then dir=${TMPDIR:-/tmp}; fi
+  printf '%s/impeccable-bench-%s.lock' "${dir%/}" "$(id -u)"
+}
+
+# Takes the lock directory $1, waiting for a live holder and clearing a dead one.
+acquire_bench_lock() {
+  local lock=$1 pid waited=""
+  while ! mkdir "$lock" 2>/dev/null; do
+    pid=$(cat "$lock/pid" 2>/dev/null || true)
+    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+      say "clearing a benchmark lock left by process $pid, which has exited"
+      rm -rf "$lock"
+      continue
+    fi
+    if [ -z "$waited" ]; then
+      say "another benchmark is running${pid:+ (process $pid)}; waiting so the runs do not compete"
+      waited=1
+    fi
+    sleep 2
+  done
+  echo $$ >"$lock/pid"
+}
+
+cmd_bench_guard() {
+  local base="" top short root rel files old new n fails=0 a lock
+  local -a cmd=() allows=() specs=()
+  local checks="benches build flags release"
+  local usage_line="usage: impeccable bench-guard <baseline> [--allow <check>=<reason>]... [--benches <pathspec>]... [-- command...]"
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --allow) [ $# -ge 2 ] || die "$usage_line"; allows+=("$2"); shift ;;
+      --allow=*) allows+=("${1#--allow=}") ;;
+      --benches) [ $# -ge 2 ] || die "$usage_line"; specs+=("$2"); shift ;;
+      --benches=*) specs+=("${1#--benches=}") ;;
+      --) shift; cmd=("$@"); break ;;
+      -h | --help) say "$usage_line"; return 0 ;;
+      -*) die "unknown option: $1" ;;
+      *) if [ -z "$base" ]; then base=$1; else die "$usage_line"; fi ;;
+    esac
+    shift
+  done
+  [ -n "$base" ] || die "$usage_line"
+  for a in ${allows[@]+"${allows[@]}"}; do
+    case " $checks " in *" ${a%%=*} "*) ;; *) die "--allow takes one of: $checks (got '${a%%=*}')" ;; esac
+    case $a in *=?*) ;; *) die "--allow ${a%%=*} needs a reason: --allow ${a%%=*}=<why>" ;; esac
+  done
+
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || die "bench-guard needs a git repository"
+  git -C "$top" rev-parse --verify --quiet "$base^{commit}" >/dev/null || die "not a commit: $base"
+  short=$(git -C "$top" log -1 --format='%h %s' "$base")
+  root=$(project_root)
+
+  row() { printf '  %-7s %-8s %s\n' "$1" "$2" "$3"; }
+  waiver() {
+    local x
+    for x in ${allows[@]+"${allows[@]}"}; do
+      if [ "${x%%=*}" = "$1" ]; then echo "${x#*=}"; return 0; fi
+    done
+    return 1
+  }
+  verdict() { # check pass|fail detail
+    local why
+    if [ "$2" = pass ]; then row PASS "$1" "$3"
+    elif why=$(waiver "$1"); then row WAIVED "$1" "$3; reason: $why"
+    else row FAIL "$1" "$3"; fails=$((fails + 1)); fi
+  }
+  changed() { # pathspec...
+    { git -C "$top" diff --name-only "$base" -- "$@"; git -C "$top" ls-files --others --exclude-standard -- "$@"; } | sort -u
+  }
+  listed() { # newline-separated items, at most six shown
+    n=$(printf '%s\n' "$1" | wc -l | tr -d ' ')
+    printf '%s\n' "$1" | head -6 | paste -sd ' ' -
+    if [ "$n" -gt 6 ]; then printf ' and %s more' "$((n - 6))"; fi
+  }
+
+  printf 'impeccable bench-guard against %s\n\n' "$short"
+
+  # benches: the benchmark definitions are the contract.
+  if [ ${#specs[@]} -eq 0 ]; then specs=(':(glob)**/benches/**'); fi
+  files=$(changed "${specs[@]}")
+  if [ -z "$files" ]; then verdict benches pass "benchmark files match the baseline"
+  else verdict benches fail "benchmark files differ from the baseline: $(listed "$files")"; fi
+
+  # build: toolchain, cargo config, and profile tables.
+  files=$(changed ':(glob)**/.cargo/config.toml' ':(glob)**/.cargo/config' \
+    ':(glob)**/rust-toolchain' ':(glob)**/rust-toolchain.toml')
+  case $root/ in
+    "$top"/*)
+      rel=${root#"$top"}; rel=${rel#/}; rel=${rel:+$rel/}Cargo.toml
+      if [ -f "$top/$rel" ]; then
+        old=$(git -C "$top" show "$base:$rel" 2>/dev/null | profile_tables || true)
+        new=$(profile_tables <"$top/$rel")
+        if [ "$old" != "$new" ]; then files=$(printf '%s\n%s' "$files" "$rel [profile]" | sed '/^$/d'); fi
+      fi ;;
+  esac
+  if [ -z "$files" ]; then verdict build pass "toolchain, cargo config, and profiles match the baseline"
+  else verdict build fail "build settings differ from the baseline: $(listed "$files")"; fi
+
+  # flags: compiler flags from the environment or user config do not ship.
+  files=$(env | sed -n -E 's/^(RUSTFLAGS|CARGO_ENCODED_RUSTFLAGS|CARGO_BUILD_RUSTFLAGS|CARGO_TARGET_[A-Z0-9_]+_RUSTFLAGS|CARGO_PROFILE_[A-Z0-9_]+)=.*/\1/p')
+  for a in "${CARGO_HOME:-$HOME/.cargo}/config.toml" "${CARGO_HOME:-$HOME/.cargo}/config"; do
+    if [ -f "$a" ] && grep -q -E '^[[:space:]]*rustflags[[:space:]]*=' "$a"; then files=$(printf '%s\n%s' "$files" "$a" | sed '/^$/d'); fi
+  done
+  if [ -z "$files" ]; then verdict flags pass "no compiler flags from the environment or user cargo config"
+  else verdict flags fail "compiler flags that do not ship: $(listed "$files")"; fi
+
+  # release: a cargo command must build an optimized profile.
+  if [ ${#cmd[@]} -gt 0 ]; then
+    local i=0 j sub="" prof=""
+    while [ "$i" -lt ${#cmd[@]} ] && [ "${cmd[i]##*/}" != cargo ]; do i=$((i + 1)); done
+    if [ "$i" -ge ${#cmd[@]} ]; then
+      row NOTE release "not a cargo command; confirm it builds with optimizations"
+    else
+      j=$((i + 1))
+      while [ "$j" -lt ${#cmd[@]} ]; do
+        a=${cmd[j]}
+        case $a in
+          --release | -r) prof=release ;;
+          --profile=*) prof=${a#--profile=} ;;
+          --profile) prof=${cmd[j + 1]:-} ;;
+          --) break ;;
+          [+-]*) ;;
+          *) if [ -z "$sub" ]; then sub=$a; fi ;;
+        esac
+        j=$((j + 1))
+      done
+      if [ "$sub" = bench ] && [ -z "$prof" ]; then prof=bench; fi
+      case $prof in
+        "" | dev | test) verdict release fail "cargo $sub builds the ${prof:-dev} profile; add --release" ;;
+        *) verdict release pass "cargo $sub builds the $prof profile" ;;
+      esac
+    fi
+  fi
+
+  # Notes route new risk to its owner; they never fail the run.
+  files=$(git -C "$top" diff -U0 "$base" -- '*.rs' | added_unsafe)
+  while IFS= read -r a; do
+    [ -n "$a" ] || continue
+    n=$(awk '{ l = " " $0 " "; if (l ~ /[^A-Za-z0-9_]unsafe[^A-Za-z0-9_]/) c++ } END { print c + 0 }' "$top/$a")
+    if [ "$n" -gt 0 ]; then files=$(printf '%s\n%s %s' "$files" "$n" "$a"); fi
+  done < <(git -C "$top" ls-files --others --exclude-standard -- '*.rs')
+  files=$(printf '%s\n' "$files" | sed '/^$/d')
+  if [ -n "$files" ]; then row NOTE unsafe "added lines with unsafe, for Miri: $(listed "$(printf '%s\n' "$files" | awk '{ print $2 " (" $1 ")" }')")"; fi
+
+  rel=${root#"$top"}; rel=${rel#/}; rel=${rel:+$rel/}Cargo.lock
+  if [ -f "$top/$rel" ]; then
+    files=$(comm -13 <(git -C "$top" show "$base:$rel" 2>/dev/null | lock_packages || true) <(lock_packages <"$top/$rel"))
+    if [ -n "$files" ]; then row NOTE deps "crates added or changed, for the dependency checks: $(listed "$files")"; fi
+  fi
+
+  if [ "$fails" -gt 0 ]; then
+    printf '\n'
+    die "$fails check(s) failed. Restore the contract, or waive a check on the record with --allow <check>=<reason>."
+  fi
+  [ ${#cmd[@]} -gt 0 ] || return 0
+
+  lock=$(bench_lock_path)
+  acquire_bench_lock "$lock"
+  # shellcheck disable=SC2064 # expand now: $lock is local and gone when the EXIT trap fires
+  trap "rm -rf $(printf %q "$lock")" EXIT
+  trap 'exit 130' INT TERM
+  printf '\n'
+  say "running under the benchmark lock: ${cmd[*]}"
+  "${cmd[@]}"
+}
+
 main() {
   local cmd=${1:-help}
   if [ $# -gt 0 ]; then shift; fi
@@ -354,6 +544,7 @@ main() {
     setup) cmd_setup "$@" ;;
     run) cmd_run "$@" ;;
     sanitize) cmd_sanitize "$@" ;;
+    bench-guard) cmd_bench_guard "$@" ;;
     help | -h | --help) usage ;;
     *) usage >&2; exit 2 ;;
   esac

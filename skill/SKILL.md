@@ -2,12 +2,12 @@
 name: impeccable-rust
 description: >-
   Use when writing, reviewing, hardening, or designing Rust for high-stakes or
-  long-lived crates, when rewriting or optimizing an implementation that
-  already works, or when auditing or setting up how a crate is verified (Miri,
-  Loom, Kani, TLA+, Lean). Checklist for exhaustive testing, trustworthy
-  benchmarks, data layout, misuse-resistant APIs and everyday API idioms,
-  decision records, semver hygiene, deliberate dependency maintenance, and
-  risk-driven formal verification with anti-drift rules.
+  long-lived crates, when making working Rust faster or rewriting it, or when
+  auditing or setting up how a crate is verified (Miri, Loom, Kani, TLA+,
+  Lean). Checklist for exhaustive testing, trustworthy benchmarks and
+  optimization loops, data layout, misuse-resistant APIs and everyday API
+  idioms, decision records, semver hygiene, deliberate dependency maintenance,
+  and risk-driven formal verification with anti-drift rules.
 ---
 
 # Impeccable Rust
@@ -34,6 +34,7 @@ hurts.
 - Run `scripts/impeccable doctor` before choosing checks. It reports which tools run on this host, which run only in the toolbox, and which are missing or older than the pinned version.
 - Run a tool the host lacks, or one that needs Linux, in the toolbox: `scripts/impeccable run cargo kani`. The first run builds the image. On macOS the toolbox is the only place gungraun, MemorySanitizer, and standalone LeakSanitizer run.
 - Run a sanitizer with `scripts/impeccable sanitize <address|thread|memory|leak> [cargo test args]`. It adds `--target`, adds `-Zbuild-std` for thread and memory, and moves to the toolbox when the host cannot run that sanitizer.
+- Run every benchmark behind a speed claim through `scripts/impeccable bench-guard <baseline> -- <command>`. It fails when benchmark files, build settings, or compiler flags differ from the baseline commit, or when a cargo command builds without optimizations. It lists new `unsafe` lines and changed crates, and it holds a machine-wide lock so benchmarks run one at a time. `--allow <check>=<reason>` waives one check on the record; the reason goes in the report.
 - Install tools on the host with `scripts/impeccable setup host` only when the user asks for it.
 
 ## Checklist (run what applies)
@@ -93,6 +94,7 @@ Trustworthy measurements (CI should fail on regression):
 
 - Prefer instruction-count / callgrind-style metrics over wall time alone (for example, `gungraun`, formerly `iai-callgrind`).
 - Interleave old and new (for example, `tango-bench`) to cut noise.
+- Use Criterion, or the crate's existing harness, for statistical wall-clock time where users feel wall time.
 - Turn the gate on explicitly. gungraun checks regressions only when limits are set (`--callgrind-limits='ir=5%'` exits 3 on a regression); without limits a doubled instruction count still passes. tango's `compare` fails the run on a significant regression only with `--fail-fast`.
 - Use a dedicated host and leave headroom (under 100% load).
 
@@ -105,6 +107,21 @@ Measure what matters, not only speed:
 - Prefer the real deployment target, not only a beefy CI box
 
 Record how you load the system (open, closed, partly-open), which statistic you report (mean, median, histogram, CDF), and how you decide a regression. "y is greater than x" is not enough.
+
+#### Benchmark contract
+
+A speed claim compares equal work under equal conditions. The benchmark definitions, workloads, and build settings at the baseline commit form the contract, and both sides of every comparison run under it:
+
+- Same work: the same inputs, iterations, accuracy, and output, timed through the production code path.
+- Same build: an optimized profile, with the same toolchain, features, and profile settings. A dependency added or bumped is part of the candidate, so declare it and run it through section 8. A `RUSTFLAGS` value or `target-cpu` setting counts only when it ships to users, and then both sides get it.
+- Clean iterations: state built in one iteration reaches the next only when production reuses it the same way, and both sides get it.
+- One benchmark at a time on the machine.
+- Repeated runs with their spread reported. A single wall-clock run is an anecdote.
+- A surprisingly large win is a suspected bug until the oracle and a fresh run confirm it.
+
+To change the contract (a missing workload, a broken benchmark), say so, make the change in its own commit, and measure the baseline again on it. `bench-guard` enforces the mechanical half of the contract; the oracle and the workload matrix carry the rest.
+
+For an optimization run (making working code faster, hitting a speedup target, or beating another crate), follow [performance.md](performance.md).
 
 #### Data layout
 
@@ -358,6 +375,7 @@ When finishing work under this skill, report:
 - Deferred: what was skipped and why (follow-up if high stakes)
 - Compat / deps: any new public surface or dependency hazard
 - Verification: the Verification impact declaration, the owner of each failure mode this change can break, and any conformance or model update
+- Performance, after an optimization run: the report section of [performance.md](performance.md)
 
 Give each check its own evidence record, so a reader can separate what was checked from what was assumed:
 
@@ -378,6 +396,7 @@ Record only checks that ran. A clean compile is not a check of behavior.
 
 - Happy-path-only tests
 - Wall-clock microbenchmarks on a shared machine as the sole perf signal
+- A speedup measured after the benchmark contract moved, or one the oracle never checked
 - `pub` everything, boolean soup, type aliases for distinct units
 - `Arc<String>` or `Arc<Vec<_>>` for data that is already immutable, and read APIs that return `&Option<T>` or a `Deref` newtype
 - Leaking hyper / serde / tokio types into a stable public API without intent
