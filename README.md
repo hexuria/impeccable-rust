@@ -23,6 +23,11 @@ under which bounds, and what was left out.
   untrusted input, Miri and cargo-careful for `unsafe`, Loom for lock-free code,
   TLA+ or Stateright for multi-actor designs, Creusot, Verus, or Lean for proof
   kernels, cargo-auditable and zizmor for supply chain and CI.
+- **Optimization loop with a benchmark contract.** Asked to make code faster,
+  the agent freezes a baseline, tries one measured hypothesis at a time, keeps
+  only changes that beat the baseline without breaking the oracle, and stops
+  when gains converge. `impeccable bench-guard` fails the run if benchmarks,
+  build settings, or compiler flags moved since the baseline.
 - **Differential oracle for rewrites.** A rewrite, port, or optimization keeps
   the old implementation until the new one matches it on generated inputs.
 - **Anti-drift rules.** One harness per property, and no second model of the
@@ -67,6 +72,7 @@ impeccable doctor              # what runs here, in the toolbox, or nowhere
 impeccable setup toolbox       # build the Linux image once (needs Docker)
 impeccable run cargo kani      # any command, in Linux, on the current project
 impeccable sanitize memory     # cargo test under a sanitizer, with the right flags
+impeccable bench-guard main -- cargo bench   # check the benchmark contract, then run one at a time
 impeccable setup host          # or install the same pinned tools on this machine
 ```
 
@@ -95,6 +101,7 @@ also name it. Example prompts:
 Use impeccable-rust to review the unsafe code in src/arena.rs.
 Harden this lock-free queue with impeccable-rust and add Loom tests.
 I rewrote the parser for speed. Verify it against the old one.
+Make the parser faster with impeccable-rust until the gains converge.
 Audit how this workspace is verified and tell me what is missing.
 Set up CI for this published crate following impeccable-rust.
 ```
