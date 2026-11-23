@@ -54,43 +54,105 @@ To get updates with `git pull`, link the folder instead of copying it:
 ln -s "$PWD/impeccable-rust/skill" ~/.claude/skills/impeccable-rust
 ```
 
+On Windows, in PowerShell:
+
+```powershell
+git clone https://github.com/hexuria/impeccable-rust
+Copy-Item -Recurse impeccable-rust\skill "$HOME\.claude\skills\impeccable-rust"
+```
+
 The folder name must be `impeccable-rust`, matching the skill's `name`. Strict
 loaders reject a folder named `skill`. For other agents, put the same folder
 wherever they load skills from, for example `.claude/skills/` or
 `.cursor/skills/` inside a project.
 
-## Toolbox
+## Tooling
 
-The skill ships `scripts/impeccable`, which sets up and runs the command-line
-tools the skill names. The agent runs `impeccable doctor` when it starts
-verification work, and runs anything the host lacks in a pinned Linux toolbox.
+The skill ships `impeccable`, a small Rust program that sets up and runs the
+command-line tools the skill names. It has no dependencies, builds in a few
+seconds with any Rust 1.89 or newer, and works on Linux, macOS, and Windows.
+The agent builds it on first use. To build it yourself, run this in the skill
+folder:
 
 ```sh
-alias impeccable=~/.claude/skills/impeccable-rust/scripts/impeccable
+cd ~/.claude/skills/impeccable-rust
+cargo install --locked --offline --path cli --root .
+alias impeccable="$PWD/bin/impeccable"
+```
 
-impeccable doctor              # what runs here, in the toolbox, or nowhere
-impeccable setup toolbox       # build the Linux image once (needs Docker)
-impeccable run cargo kani      # any command, in Linux, on the current project
+The build writes only inside the skill folder. After a skill update or an
+edited pin, `impeccable` says it is older than the skill; run the same command
+again.
+
+```sh
+impeccable doctor              # where each tool runs: host, toolbox, or nowhere
+impeccable run cargo kani      # on the host if Kani is installed, else in the toolbox
+impeccable run --toolbox cargo test   # any command, in Linux, on the current project
 impeccable sanitize memory     # cargo test under a sanitizer, with the right flags
 impeccable bench-guard main -- cargo bench   # check the benchmark contract, then run one at a time
+impeccable setup toolbox       # build the Linux image ahead of time (needs Docker)
 impeccable setup host          # or install the same pinned tools on this machine
 ```
 
-The toolbox is a Docker image with its tools pinned in
-[`skill/toolbox/tools.txt`](skill/toolbox/tools.txt) and the
-[`Dockerfile`](skill/toolbox/Dockerfile): Miri, cargo-careful,
-sanitizers, nextest, cargo-mutants, cargo-llvm-cov, cargo-fuzz, Bolero, Kani,
-gungraun with Valgrind, TLC, cargo-semver-checks, cargo-public-api, cargo-deny,
-cargo-audit, cargo-auditable, cargo-vet, and zizmor. The image is several GB,
-and the first build takes a few minutes. It mounts your workspace at `/work` and
-keeps build output in a Docker volume, so host builds stay untouched. Editing a
-pin rebuilds the image on the next run and removes the superseded one. Library
-crates such as proptest and Loom come in through Cargo, and the provers (Lean,
-Verus, Creusot, Aeneas, hax) are not included.
+### Host or toolbox
 
-On macOS the toolbox runs what the host cannot: gungraun, MemorySanitizer, and
-standalone LeakSanitizer. gungraun measures cache behavior more precisely with
-`IMPECCABLE_UNCONFINED=1`, which lets it turn off address randomization.
+`impeccable run` picks a backend for each command:
+
+- **Host.** A pinned tool you already have installed runs directly, and
+  `impeccable` prints the version that ran. A tool older than its pin runs in
+  the toolbox when Docker is available, and on the host with a warning when it
+  is not.
+- **Toolbox.** Everything else runs in a Docker image with its tools pinned in
+  [`skill/toolbox/tools.txt`](skill/toolbox/tools.txt) and the
+  [`Dockerfile`](skill/toolbox/Dockerfile): Miri, cargo-careful, sanitizers,
+  nextest, cargo-mutants, cargo-llvm-cov, cargo-fuzz, Bolero, Kani, gungraun
+  with Valgrind, TLC, cargo-semver-checks, cargo-public-api, cargo-deny,
+  cargo-audit, cargo-auditable, cargo-vet, and zizmor.
+
+To work without Docker, set `IMPECCABLE_BACKEND=host`. Every run stays on the
+host, and a missing tool prints the command that installs it.
+`IMPECCABLE_BACKEND=toolbox` does the opposite and sends everything to the
+image.
+
+Some tools have no host build on some systems. Valgrind, and so gungraun, runs
+only on Linux. MemorySanitizer and standalone LeakSanitizer need Linux too.
+Kani has no Windows build. Without Docker these run nowhere on that machine,
+`doctor` says so, and the agent reports the check as a gap.
+
+Library crates such as proptest and Loom come in through Cargo, and the provers
+(Lean, Verus, Creusot, Aeneas, hax) are not included.
+
+### The toolbox image
+
+The image is several GB, and the first build takes a few minutes. It mounts
+your workspace at `/work`. Build output, the Cargo registry, and tool caches
+live in Docker volumes that belong to that one project, so host builds stay
+untouched and one project's build scripts cannot change what another project
+runs. The image tag is a fingerprint of the pins and the CLI, so a changed pin
+builds a new image and removes the old one.
+
+A host run has no isolation: build scripts and tests run with your own access.
+For code you do not trust, such as a contributor's branch, use the toolbox
+with `IMPECCABLE_EPHEMERAL=1`. Its caches are then deleted when the run ends,
+so nothing that build wrote reaches a later run.
+
+`GH_TOKEN` or `GITHUB_TOKEN`, when set, is passed to the image build so tool
+downloads avoid GitHub's anonymous rate limit. It is mounted only for the step
+that downloads prebuilt binaries. Steps that compile code run without it.
+
+gungraun measures cache behavior more precisely with `IMPECCABLE_UNCONFINED=1`,
+which lets it turn off address randomization.
+
+### Upgrading from the bash script
+
+Earlier versions shipped `scripts/impeccable`, a bash script. Its Cargo caches
+were shared by every project. Remove them, and the old per-project build
+volumes, once you have built the new CLI:
+
+```sh
+docker volume rm impeccable-cargo-registry impeccable-cargo-git impeccable-cache
+docker volume ls -q --filter name=impeccable-target- | xargs docker volume rm
+```
 
 ## Use it
 

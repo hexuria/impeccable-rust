@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
 # Linux toolbox for the impeccable-rust skill: its command-line tools, pinned.
-# Build and use it through scripts/impeccable (`setup toolbox`, then `run <command>`).
-# The image tag is a hash of this folder and that script, so editing a pin rebuilds it.
+# Build and use it through the impeccable CLI in ../cli (`setup toolbox`, then `run <command>`).
+# The CLI embeds this folder and its own source, and tags the image with their fingerprint,
+# so editing a pin and rebuilding the CLI yields a new image.
 ARG RUST_IMAGE=rust:1.98.1-trixie
 FROM ${RUST_IMAGE}
 
@@ -30,13 +31,23 @@ RUN triple="$(rustc -vV | sed -n 's/^host: //p')" \
 RUN curl -fsSL "https://github.com/cargo-bins/cargo-binstall/releases/download/v${BINSTALL_VERSION}/cargo-binstall-$(uname -m)-unknown-linux-musl.tgz" \
   | tar -xz -C "${CARGO_HOME}/bin"
 
-# binstall downloads prebuilt binaries and compiles from source only when a download
-# lookup fails. Anonymous GitHub API calls are rate limited, so `impeccable setup toolbox`
-# passes GH_TOKEN or GITHUB_TOKEN as a build secret when one is set; secrets never reach
-# an image layer.
+# Anonymous GitHub API calls are rate limited, so `impeccable setup toolbox` passes GH_TOKEN
+# or GITHUB_TOKEN as a build secret when one is set. The token exists only in this step, and
+# this step only downloads prebuilt binaries: with the compile strategy off, no build script
+# runs while the token is readable. A tool with no prebuilt binary is left for the next step.
 COPY toolbox/tools.txt /usr/local/share/impeccable/tools.txt
 RUN --mount=type=secret,id=github_token,env=GITHUB_TOKEN,required=false \
     grep -v -E '^[[:space:]]*(#|$)' /usr/local/share/impeccable/tools.txt \
+  | awk '$1 != "kani-verifier" { print $1 "@" $2 }' \
+  | while read -r spec; do \
+      cargo binstall -y --disable-telemetry --locked --disable-strategies compile \
+        --maximum-resolution-timeout 120 "${spec}" \
+      || echo "impeccable: no prebuilt binary for ${spec}; the next step builds it" >&2; \
+    done
+
+# No secret in this step. binstall skips what the step above installed and compiles the
+# rest; Kani always compiles. Their build scripts run with no token in reach.
+RUN grep -v -E '^[[:space:]]*(#|$)' /usr/local/share/impeccable/tools.txt \
   | awk '$1 != "kani-verifier" { print $1 "@" $2 }' \
   | xargs cargo binstall -y --disable-telemetry --locked --maximum-resolution-timeout 120 \
  && kani="$(awk '$1 == "kani-verifier" { print $2 }' /usr/local/share/impeccable/tools.txt)" \
@@ -49,8 +60,13 @@ RUN curl -fsSL -o /opt/tla2tools.jar "https://github.com/tlaplus/tlaplus/release
  && printf '#!/bin/sh\nexec java -XX:+UseParallelGC -cp /opt/tla2tools.jar tlc2.TLC "$@"\n' > /usr/local/bin/tlc \
  && chmod +x /usr/local/bin/tlc
 
-COPY toolbox/entrypoint /usr/local/bin/impeccable-entrypoint
-COPY scripts/impeccable /usr/local/bin/impeccable
+# The CLI, built from the same source as the one on the host. It has no dependencies, so it
+# builds offline. It embeds the toolbox files, which is why they are copied next to it.
+COPY --chmod=755 toolbox/entrypoint /usr/local/bin/impeccable-entrypoint
+COPY toolbox /usr/local/src/impeccable/toolbox
+COPY cli /usr/local/src/impeccable/cli
+RUN cargo install --locked --offline --path /usr/local/src/impeccable/cli \
+ && rm -rf /usr/local/src/impeccable/cli/target
 
 # Docker's default seccomp profile blocks the call gungraun uses to turn off ASLR, so the
 # toolbox allows ASLR. `IMPECCABLE_UNCONFINED=1 impeccable run ...` restores gungraun's default.

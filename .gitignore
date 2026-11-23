@@ -1,2 +1,7 @@
 gh-auth.log
 skill/BODY.md
+# The impeccable CLI, built into the skill folder by `cargo install --path cli --root .`
+skill/bin/
+skill/.crates.toml
+skill/.crates2.json
+skill/cli/target/

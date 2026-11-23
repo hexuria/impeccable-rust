@@ -1,0 +1,4 @@
+# The toolbox files run inside a Linux container and are compiled into the CLI, so they
+# keep Unix line endings on every platform.
+skill/toolbox/* text eol=lf
+skill/cli/** text eol=lf

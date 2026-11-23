@@ -1,0 +1,20 @@
+[package]
+name = "impeccable"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Sets up, checks, and runs the command-line tools the impeccable-rust skill names"
+publish = false
+
+# No dependencies, on purpose: the skill builds this on first use, so it must compile in
+# seconds, offline, with nothing but a Rust toolchain.
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+# Its own workspace root, so a copy of the skill inside another Cargo project still builds.
+[workspace]
