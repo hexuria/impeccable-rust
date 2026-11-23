@@ -206,6 +206,9 @@ this workflow as a trusted publisher and the repository variable
 - [`examples/opengrok`](examples/opengrok/README.md): OpenGrok or Grok Bot
   orchestrates, Claude Code writes with the skill, and a Cursor cloud agent
   reviews the PR against it.
+- [`examples/devin`](examples/devin/README.md): Claude Code orchestrates,
+  Devin sessions write with the skill on their own Linux machines, and a Devin
+  automation gates every PR against it.
 
 ## License
 
