@@ -203,6 +203,9 @@ this workflow as a trusted publisher and the repository variable
 
 ## Examples
 
+- [`examples/claude-code`](examples/claude-code/README.md): Claude Code alone
+  on your machine, with or without Docker, and a fresh subagent auditing the
+  report.
 - [`examples/opengrok`](examples/opengrok/README.md): OpenGrok or Grok Bot
   orchestrates, Claude Code writes with the skill, and a Cursor cloud agent
   reviews the PR against it.
