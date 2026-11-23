@@ -92,7 +92,7 @@ initialize:
   - name: Install cargo-binstall at a pinned version
     run: curl -fsSL "https://github.com/cargo-bins/cargo-binstall/releases/download/v1.24.0/cargo-binstall-$(uname -m)-unknown-linux-musl.tgz" | tar -xz -C "${CARGO_HOME:-$HOME/.cargo}/bin"
   - name: Install the impeccable CLI
-    run: cargo binstall -y --disable-telemetry impeccable@0.2.0
+    run: cargo binstall -y --disable-telemetry impeccable@0.2.1
   - name: Install the pinned verification tools on this machine
     run: sudo apt-get install -y valgrind && IMPECCABLE_BACKEND=host impeccable setup host --with-kani
   - name: Keep every impeccable run on this machine

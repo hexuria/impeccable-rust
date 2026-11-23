@@ -1,6 +1,6 @@
 [package]
 name = "impeccable"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.89"
 description = "Sets up, checks, and runs the verification tools the impeccable-rust agent skill names"
