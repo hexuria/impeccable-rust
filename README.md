@@ -68,21 +68,33 @@ wherever they load skills from, for example `.claude/skills/` or
 
 ## Tooling
 
-The skill ships `impeccable`, a small Rust program that sets up and runs the
-command-line tools the skill names. It has no dependencies, builds in a few
-seconds with any Rust 1.89 or newer, and works on Linux, macOS, and Windows.
-The agent builds it on first use. To build it yourself, run this in the skill
-folder:
+The skill comes with `impeccable`, a small Rust program that sets up and runs
+the command-line tools the skill names. It has no dependencies and works on
+Linux, macOS, and Windows. Put it on your `PATH` one of these ways:
+
+```sh
+cargo binstall impeccable           # downloads a prebuilt binary
+cargo install --locked impeccable   # or compiles it, in a few seconds
+```
+
+Each [release](https://github.com/hexuria/impeccable-rust/releases) also has
+an archive per platform, with a SHA-256 file and a build provenance
+attestation:
+
+```sh
+gh attestation verify impeccable-*.tar.gz --repo hexuria/impeccable-rust
+```
+
+Without any of these, the agent builds the copy in the skill folder on first
+use, which needs Rust 1.89 or newer and writes only inside that folder:
 
 ```sh
 cd ~/.claude/skills/impeccable-rust
 cargo install --locked --offline --path cli --root .
-alias impeccable="$PWD/bin/impeccable"
 ```
 
-The build writes only inside the skill folder. After a skill update or an
-edited pin, `impeccable` says it is older than the skill; run the same command
-again.
+That copy is `bin/impeccable`. After a skill update or an edited pin it says
+it is older than the skill; run the same command again.
 
 ```sh
 impeccable doctor              # where each tool runs: host, toolbox, or nowhere
@@ -103,8 +115,8 @@ impeccable setup host          # or install the same pinned tools on this machin
   the toolbox when Docker is available, and on the host with a warning when it
   is not.
 - **Toolbox.** Everything else runs in a Docker image with its tools pinned in
-  [`skill/toolbox/tools.txt`](skill/toolbox/tools.txt) and the
-  [`Dockerfile`](skill/toolbox/Dockerfile): Miri, cargo-careful, sanitizers,
+  [`tools.txt`](skill/cli/toolbox/tools.txt) and the
+  [`Dockerfile`](skill/cli/toolbox/Dockerfile): Miri, cargo-careful, sanitizers,
   nextest, cargo-mutants, cargo-llvm-cov, cargo-fuzz, Bolero, Kani, gungraun
   with Valgrind, TLC, cargo-semver-checks, cargo-public-api, cargo-deny,
   cargo-audit, cargo-auditable, cargo-vet, and zizmor.
@@ -178,6 +190,16 @@ Deferred:     fuzz campaign on parse() moved to nightly CI
 Compat/deps:  no new public surface; cargo deny clean
 Verification: unsafe / memory behavior; owner of each affected failure mode
 ```
+
+## Releasing the CLI
+
+Set the new version in `skill/cli/Cargo.toml`, run `cargo generate-lockfile`
+there, and merge. Then tag that commit `v<version>` and push the tag. The
+release workflow tests and builds every target and attaches the archives to a
+GitHub release. It also publishes the crate to crates.io once the crate lists
+this workflow as a trusted publisher and the repository variable
+`CRATES_IO_TRUSTED_PUBLISHING` is `true`; until then, run `cargo publish` in
+`skill/cli` from the tagged commit.
 
 ## Examples
 

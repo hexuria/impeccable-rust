@@ -1,0 +1,67 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: skill/cli
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Format
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --check
+      - name: Lint
+        run: cargo clippy --locked --offline --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --locked --offline
+      # The way the skill builds it, then the commands that need no Docker.
+      - name: Build into the skill folder
+        run: cargo install --locked --offline --path . --root ..
+      - name: Smoke test
+        # bash stops at the first failing command on every runner; PowerShell would not.
+        shell: bash
+        run: |
+          ../bin/impeccable --version
+          ../bin/impeccable doctor
+          ../bin/impeccable setup host --dry-run
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the minimum supported Rust
+        run: rustup toolchain install 1.89 --profile minimal
+      - name: Check
+        run: cargo +1.89 check --locked --offline --all-targets
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Builds the crate exactly as crates.io would serve it.
+      - name: Package
+        run: cargo package --locked

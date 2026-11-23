@@ -16,7 +16,7 @@ Finish setup before changing production code.
 2. Name the oracle. For an optimization this is the old implementation kept in the tree (section 2 of SKILL.md), a reference implementation, or properties and invariants. When speed can trade against output quality (accuracy, loss, compression ratio), quality becomes a metric with its own tolerance.
 3. Write the workload matrix from real use: small, typical, large, pathological, cold, and warm inputs.
 4. Commit the benchmarks and the matrix. That commit is the **baseline**, and the contract is frozen there.
-5. Measure the baseline. Check out the baseline commit in its own worktree and run the matrix with the same command you will use on candidates, through `bin/impeccable bench-guard <baseline> -- <command>`. Repeat until the median and spread are stable. Record the toolchain, profile, CPU, features, and inputs.
+5. Measure the baseline. Check out the baseline commit in its own worktree and run the matrix with the same command you will use on candidates, through `impeccable bench-guard <baseline> -- <command>`. Repeat until the median and spread are stable. Record the toolchain, profile, CPU, features, and inputs.
 
 | Default | Value |
 |---------|-------|

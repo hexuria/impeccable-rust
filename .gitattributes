@@ -1,4 +1,3 @@
-# The toolbox files run inside a Linux container and are compiled into the CLI, so they
-# keep Unix line endings on every platform.
-skill/toolbox/* text eol=lf
+# The CLI compiles its own source and the toolbox files into the binary, and the toolbox
+# files run inside a Linux container, so all of it keeps Unix line endings everywhere.
 skill/cli/** text eol=lf

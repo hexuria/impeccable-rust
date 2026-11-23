@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1
 # Linux toolbox for the impeccable-rust skill: its command-line tools, pinned.
-# Build and use it through the impeccable CLI in ../cli (`setup toolbox`, then `run <command>`).
-# The CLI embeds this folder and its own source, and tags the image with their fingerprint,
-# so editing a pin and rebuilding the CLI yields a new image.
+# Build and use it through the impeccable CLI, the crate this folder belongs to
+# (`setup toolbox`, then `run <command>`). The CLI embeds this folder and its own source,
+# and tags the image with their fingerprint, so editing a pin and rebuilding the CLI
+# yields a new image. The build context is the crate root.
 ARG RUST_IMAGE=rust:1.98.1-trixie
 FROM ${RUST_IMAGE}
 
@@ -61,12 +62,11 @@ RUN curl -fsSL -o /opt/tla2tools.jar "https://github.com/tlaplus/tlaplus/release
  && chmod +x /usr/local/bin/tlc
 
 # The CLI, built from the same source as the one on the host. It has no dependencies, so it
-# builds offline. It embeds the toolbox files, which is why they are copied next to it.
+# builds offline.
 COPY --chmod=755 toolbox/entrypoint /usr/local/bin/impeccable-entrypoint
-COPY toolbox /usr/local/src/impeccable/toolbox
-COPY cli /usr/local/src/impeccable/cli
-RUN cargo install --locked --offline --path /usr/local/src/impeccable/cli \
- && rm -rf /usr/local/src/impeccable/cli/target
+COPY . /usr/local/src/impeccable
+RUN cargo install --locked --offline --path /usr/local/src/impeccable \
+ && rm -rf /usr/local/src/impeccable/target
 
 # Docker's default seccomp profile blocks the call gungraun uses to turn off ASLR, so the
 # toolbox allows ASLR. `IMPECCABLE_UNCONFINED=1 impeccable run ...` restores gungraun's default.

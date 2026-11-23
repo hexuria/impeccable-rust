@@ -3,11 +3,15 @@ name = "impeccable"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.89"
-description = "Sets up, checks, and runs the command-line tools the impeccable-rust skill names"
-publish = false
+description = "Sets up, checks, and runs the verification tools the impeccable-rust agent skill names"
+license = "MIT"
+repository = "https://github.com/hexuria/impeccable-rust"
+readme = "README.md"
+keywords = ["verification", "testing", "benchmark", "kani", "miri"]
+categories = ["development-tools", "command-line-utilities"]
 
-# No dependencies, on purpose: the skill builds this on first use, so it must compile in
-# seconds, offline, with nothing but a Rust toolchain.
+# No dependencies, on purpose: the skill can build this on first use, so it must compile
+# in seconds, offline, with nothing but a Rust toolchain.
 [dependencies]
 
 [lints.rust]
@@ -15,6 +19,22 @@ unsafe_code = "forbid"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = true
+strip = true
+
+# Where `cargo binstall impeccable` finds the archives the release workflow uploads.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }-v{ version }{ archive-suffix }"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-fmt = "zip"
 
 # Its own workspace root, so a copy of the skill inside another Cargo project still builds.
 [workspace]

@@ -29,7 +29,7 @@ hurts.
 
 ## Tooling
 
-`bin/impeccable`, in this skill's folder, sets up and runs the command-line tools this skill names. It is a Rust program with no dependencies, so it works the same on Linux, macOS, and Windows. Build it from this skill's folder before its first use, and again whenever it says it is older than the skill. The build writes only inside this folder:
+`impeccable` sets up and runs the command-line tools this skill names. It is a Rust program with no dependencies, so it works the same on Linux, macOS, and Windows. Use the `impeccable` on `PATH` when `impeccable --version` reports 0.2 or newer. Otherwise build it from this skill's folder and call it as `bin/impeccable`. The build writes only inside this folder, and that binary says when it is older than the skill and needs the same command again:
 
 ```sh
 cargo install --locked --offline --path cli --root .
@@ -37,14 +37,14 @@ cargo install --locked --offline --path cli --root .
 
 It sends each tool to a **backend**: the host when the host has that tool, otherwise the toolbox, a Linux Docker image with each tool pinned. Library crates such as proptest, Loom, and Bolero come in through Cargo as usual. The provers (Lean, Verus, Creusot, Aeneas, hax) are not in the toolbox.
 
-- Run `bin/impeccable doctor` before choosing checks. Its RUNS column says where each tool runs: `host`, `toolbox`, or `nowhere`.
-- Run a tool with `bin/impeccable run <command>`, for example `bin/impeccable run cargo kani`. A pinned tool the host has runs on the host, and the line it prints names the version that ran; cite that version in the report. Every other command runs in the toolbox, which the first run builds. `--toolbox` forces Linux, and `--host` forces the host.
+- Run `impeccable doctor` before choosing checks. Its RUNS column says where each tool runs: `host`, `toolbox`, or `nowhere`.
+- Run a tool with `impeccable run <command>`, for example `impeccable run cargo kani`. A pinned tool the host has runs on the host, and the line it prints names the version that ran; cite that version in the report. Every other command runs in the toolbox, which the first run builds. `--toolbox` forces Linux, and `--host` forces the host.
 - When the user works without Docker, set `IMPECCABLE_BACKEND=host`. Every run then stays on the host, and a missing tool prints the command that installs it.
 - A tool that runs `nowhere` is a **gap**: report the check as not run, with the reason `doctor` or `run` printed. On macOS, gungraun, MemorySanitizer, and standalone LeakSanitizer run only in the toolbox. On Windows, so does Kani.
 - Host runs are not isolated: build scripts and tests run with the user's own access. Run code you do not trust, such as a contributor's branch, in the toolbox with `IMPECCABLE_EPHEMERAL=1`, which deletes the toolbox's caches when the run ends.
-- Run a sanitizer with `bin/impeccable sanitize <address|thread|memory|leak> [cargo test args]`. It adds `--target`, adds `-Zbuild-std` for thread and memory, and moves to the toolbox when the host cannot run that sanitizer.
-- Run every benchmark behind a speed claim through `bin/impeccable bench-guard <baseline> -- <command>`. It fails when benchmark files, build settings, or compiler flags differ from the baseline commit, or when a cargo command builds without optimizations. It lists new `unsafe` lines and changed crates, and it holds a machine-wide lock so benchmarks run one at a time. `--allow <check>=<reason>` waives one check on the record; the reason goes in the report.
-- Install tools on the host with `bin/impeccable setup host` only when the user asks for it.
+- Run a sanitizer with `impeccable sanitize <address|thread|memory|leak> [cargo test args]`. It adds `--target`, adds `-Zbuild-std` for thread and memory, and moves to the toolbox when the host cannot run that sanitizer.
+- Run every benchmark behind a speed claim through `impeccable bench-guard <baseline> -- <command>`. It fails when benchmark files, build settings, or compiler flags differ from the baseline commit, or when a cargo command builds without optimizations. It lists new `unsafe` lines and changed crates, and it holds a machine-wide lock so benchmarks run one at a time. `--allow <check>=<reason>` waives one check on the record; the reason goes in the report.
+- Install on the host only when the user asks for it: the pinned tools with `impeccable setup host`, and `impeccable` itself on `PATH` with `cargo binstall impeccable`.
 
 ## Checklist (run what applies)
 

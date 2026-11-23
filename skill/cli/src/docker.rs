@@ -358,7 +358,7 @@ mod tests {
                     "--quiet",
                     "--manifest-path",
                 ])
-                .arg(context.dir.join("cli").join("Cargo.toml")),
+                .arg(context.dir.join("Cargo.toml")),
         );
         assert!(
             builds,
