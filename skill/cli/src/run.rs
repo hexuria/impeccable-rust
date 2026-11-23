@@ -59,7 +59,7 @@ pub fn place(
 ) -> Result<Place, String> {
     let toolbox = |daemon: Daemon, otherwise: String| match daemon {
         Daemon::Ready => Ok(Place::Toolbox),
-        Daemon::NotInstalled | Daemon::NotRunning => Err(otherwise),
+        Daemon::NotInstalled | Daemon::NotRunning | Daemon::NotLinux => Err(otherwise),
     };
     match (backend, tool) {
         (Backend::Toolbox, _) => {
@@ -85,7 +85,7 @@ pub fn place(
         (Backend::Host, Some((_, HostState::Older { .. }))) => Ok(Place::Host),
         (Backend::Auto, Some((_, HostState::Older { .. }))) => Ok(match daemon() {
             Daemon::Ready => Place::Toolbox,
-            Daemon::NotInstalled | Daemon::NotRunning => Place::Host,
+            Daemon::NotInstalled | Daemon::NotRunning | Daemon::NotLinux => Place::Host,
         }),
         (Backend::Host, Some((label, HostState::Missing(install)))) => Err(format!(
             "{label} is not installed on this host. Install it with: {install}"

@@ -36,7 +36,7 @@ pub fn unsupported_reason(tool: &str, os: Os) -> Option<&'static str> {
     match (tool, os) {
         ("gungraun-runner" | "valgrind", Os::Mac) => Some("no Valgrind on macOS"),
         ("gungraun-runner" | "valgrind", Os::Windows) => Some("no Valgrind on Windows"),
-        ("kani-verifier", Os::Windows) => Some("Kani has no Windows build"),
+        ("kani-verifier", Os::Windows) => Some("no Kani on Windows"),
         _ => None,
     }
 }

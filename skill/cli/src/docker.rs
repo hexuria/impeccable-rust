@@ -53,6 +53,8 @@ pub fn in_toolbox() -> bool {
 pub enum Daemon {
     NotInstalled,
     NotRunning,
+    /// Running, but in Windows-container mode, which cannot run the Linux toolbox.
+    NotLinux,
     Ready,
 }
 
@@ -62,6 +64,7 @@ impl Daemon {
         match self {
             Self::NotInstalled => "Docker is not installed",
             Self::NotRunning => "Docker is not running",
+            Self::NotLinux => "Docker is not set to run Linux containers",
             Self::Ready => "",
         }
     }
@@ -70,10 +73,14 @@ impl Daemon {
 pub fn daemon() -> Daemon {
     if !proc::have("docker") {
         Daemon::NotInstalled
-    } else if proc::succeeds(proc::command("docker").arg("info")) {
-        Daemon::Ready
     } else {
-        Daemon::NotRunning
+        let os =
+            proc::stdout_if_ok(proc::command("docker").args(["info", "--format", "{{.OSType}}"]));
+        match os.as_deref().map(str::trim) {
+            Some("linux") => Daemon::Ready,
+            Some(_) => Daemon::NotLinux,
+            None => Daemon::NotRunning,
+        }
     }
 }
 

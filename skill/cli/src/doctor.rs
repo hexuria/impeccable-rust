@@ -191,6 +191,9 @@ fn docker_line(inside: bool, daemon: Daemon) -> String {
     match daemon {
         Daemon::NotInstalled => "not installed".to_owned(),
         Daemon::NotRunning => "installed, not running".to_owned(),
+        Daemon::NotLinux => {
+            "running Windows containers; the toolbox needs Linux containers".to_owned()
+        }
         Daemon::Ready => {
             let image = docker::image();
             if docker::image_built(&image) {
