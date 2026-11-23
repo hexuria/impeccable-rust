@@ -116,7 +116,12 @@ fn setup_host(options: &[String]) -> Outcome<()> {
         specs.push(format!("{}@{}", pin.name, pin.version));
     }
     if mode == Mode::Install && !proc::have("cargo-binstall") {
-        bail!("cargo-binstall is required: cargo install --locked cargo-binstall");
+        // The newest cargo-binstall often needs a newer Rust than the one installed, so
+        // name the version the toolbox pins.
+        let version = pins::dockerfile_arg("BINSTALL_VERSION")
+            .map(|version| format!(" --version {version}"))
+            .unwrap_or_default();
+        bail!("cargo-binstall is required: cargo install --locked cargo-binstall{version}");
     }
     let mut binstall = vec!["cargo", "binstall", "-y", "--disable-telemetry", "--locked"];
     binstall.extend(specs.iter().map(String::as_str));

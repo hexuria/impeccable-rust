@@ -77,7 +77,7 @@ pub fn run() -> Outcome<ExitCode> {
     );
     row("TOOL", "HOST", "TOOLBOX", "RUNS");
 
-    let missing_components = rust_rows(&routing);
+    let toolchain_hint = rust_rows(&routing);
     for pin in pins::all() {
         let tool = Tool::Pinned(pin);
         let state = tool.state();
@@ -117,28 +117,25 @@ pub fn run() -> Outcome<ExitCode> {
     if !inside && routing.daemon != Daemon::Ready {
         println!("  The TOOLBOX column applies once Docker is running.");
     }
-    if !missing_components.is_empty() {
-        println!(
-            "  Add the missing nightly components with: rustup +nightly component add {}",
-            missing_components.join(" ")
-        );
+    if let Some(hint) = toolchain_hint {
+        println!("  {hint}");
     }
     println!("  RUNS is where `impeccable run <tool>` sends each tool with this backend.");
     println!("  A tool that runs nowhere is a gap to report, not a check to skip.");
     Ok(ExitCode::SUCCESS)
 }
 
-/// Prints the toolchain rows and returns the nightly components that are not installed.
-fn rust_rows(routing: &Routing) -> Vec<&'static str> {
+/// Prints the toolchain rows and returns the command that installs what is missing.
+///
+/// The command goes under the table because it is wider than the HOST column.
+fn rust_rows(routing: &Routing) -> Option<String> {
     let pinned_nightly = pins::dockerfile_arg("NIGHTLY").unwrap_or("pinned");
     if !host::nightly_installed() {
-        row(
-            "rust nightly",
-            "missing: rustup toolchain install nightly",
-            pinned_nightly,
-            "",
+        row("rust nightly", "missing", pinned_nightly, "");
+        return Some(
+            "Install nightly with: rustup toolchain install nightly --component miri,rust-src"
+                .to_owned(),
         );
-        return Vec::new();
     }
     let date = host::nightly_date().unwrap_or_else(|| "installed".to_owned());
     row(
@@ -161,7 +158,12 @@ fn rust_rows(routing: &Routing) -> Vec<&'static str> {
         };
         row(component, host, "yes", runs);
     }
-    missing
+    (!missing.is_empty()).then(|| {
+        format!(
+            "Add the missing nightly components with: rustup +nightly component add {}",
+            missing.join(" ")
+        )
+    })
 }
 
 fn sanitizer_rows(routing: &Routing) {
